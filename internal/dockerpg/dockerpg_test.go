@@ -2,6 +2,7 @@ package dockerpg
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -849,13 +850,61 @@ func TestSandboxURL(t *testing.T) {
 	}
 }
 
+// fakePsql puts a psql reporting version first on the PATH, as the only one
+// pg can find, and returns its path. With version 0 there's none at all.
+func fakePsql(t *testing.T, version int) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	old := psqlDirs
+	psqlDirs = ""
+	t.Cleanup(func() { psqlDirs = old })
+	path := filepath.Join(dir, "psql")
+	if version > 0 {
+		script := fmt.Sprintf("#!/bin/sh\necho 'psql (PostgreSQL) %d.2 (Homebrew)'\n", version)
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path
+}
+
 func TestPsql(t *testing.T) {
 	settings := conn.Settings{Host: "localhost", Port: 5418, User: "postgres", Password: "it's", Database: "app"}
-	cmd := Psql(t.Context(), settings, false, "postgres:18", "/Users/me/pg-queries")
+	t.Setenv("PGSERVICE", "elsewhere") // the user's own, which mustn't reach psql
+
+	// The Mac's own, as it's as new as the server.
+	path := fakePsql(t, 18)
+	cmd, notice := Psql(t.Context(), settings, false, "postgres:18", "/Users/me/pg-queries")
+	if cmd.Path != path || len(cmd.Args) != 1 || cmd.Dir != "/Users/me/pg-queries" || notice != "" {
+		t.Errorf("host psql = %v in %q, notice %q", cmd.Args, cmd.Dir, notice)
+	}
+	for _, want := range []string{"PGHOST=localhost", "PGPORT=5418", "PGPASSWORD=it's", "PGDATABASE=app", "TERM=xterm-256color"} {
+		if !slices.Contains(cmd.Env, want) {
+			t.Errorf("host env lacks %s: %v", want, cmd.Env)
+		}
+	}
+	if slices.Contains(cmd.Env, "PGSERVICE=elsewhere") || slices.Contains(cmd.Env, readOnlyOptions) {
+		t.Errorf("host env = %v", cmd.Env)
+	}
+	if cmd, _ = Psql(t.Context(), settings, true, "postgres:18", "/Users/me/pg-queries"); !slices.Contains(cmd.Env, readOnlyOptions) {
+		t.Errorf("read-only service not passed on to host psql: %v", cmd.Env)
+	}
+	// A server whose version couldn't be read takes any psql.
+	if cmd, _ = Psql(t.Context(), settings, false, "postgres:latest", "/Users/me/pg-queries"); cmd.Path != path {
+		t.Errorf("latest = %v", cmd.Args)
+	}
+
+	// Docker's, with a notice, as the Mac's is older than the server.
+	path = fakePsql(t, 14)
+	cmd, notice = Psql(t.Context(), settings, false, "postgres:18", "/Users/me/pg-queries")
 	args := strings.Join(cmd.Args[1:], " ")
 	want := "run --rm -it --init -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE -v /Users/me/pg-queries:/queries:ro -w /queries postgres:18 psql"
 	if args != want {
 		t.Errorf("args = %s\nwant %s", args, want)
+	}
+	if !strings.Contains(notice, path+" is psql 14, older than this server's 18") || !strings.Contains(notice, "Update yours to 18 or later") {
+		t.Errorf("notice = %q", notice)
 	}
 	if !slices.Contains(cmd.Env, "PGPASSWORD=it's") || !slices.Contains(cmd.Env, "PGHOST=host.docker.internal") {
 		t.Errorf("env lacks the connection: %v", cmd.Env)
@@ -863,10 +912,15 @@ func TestPsql(t *testing.T) {
 	if slices.Contains(cmd.Args, "PGOPTIONS") {
 		t.Errorf("writable service made read-only: %v", cmd.Args)
 	}
-
-	cmd = Psql(t.Context(), settings, true, "postgres:18", "/Users/me/pg-queries")
-	if !strings.Contains(strings.Join(cmd.Args, " "), "-e PGDATABASE -e PGOPTIONS -v") || !slices.Contains(cmd.Env, "PGOPTIONS=-c default_transaction_read_only=on") {
+	cmd, _ = Psql(t.Context(), settings, true, "postgres:18", "/Users/me/pg-queries")
+	if !strings.Contains(strings.Join(cmd.Args, " "), "-e PGDATABASE -e PGOPTIONS -v") || !slices.Contains(cmd.Env, readOnlyOptions) {
 		t.Errorf("read-only service not passed on: %v, %v", cmd.Args, cmd.Env)
+	}
+
+	// Docker's without a word when there's no psql to update.
+	fakePsql(t, 0)
+	if cmd, notice = Psql(t.Context(), settings, false, "postgres:18", "/Users/me/pg-queries"); cmd.Args[1] != "run" || notice != "" {
+		t.Errorf("no host psql = %v, notice %q", cmd.Args, notice)
 	}
 }
 

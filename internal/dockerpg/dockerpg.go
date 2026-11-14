@@ -1,5 +1,6 @@
 // Package dockerpg runs Postgres' own tools in Docker, so backups need nothing
-// installed and always use the version that matches the server.
+// installed and always use the version that matches the server. psql is the
+// exception: the Mac's own is preferred when it's new enough.
 package dockerpg
 
 import (
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -152,18 +154,23 @@ func containerHost(host string) string {
 // shortcut: sslmode isn't passed on, so the tools use their default of prefer.
 // Add it if a service ever needs verify-full.
 func pgEnv(s conn.Settings) (env, pass []string) {
-	env = []string{
-		"PGHOST=" + containerHost(s.Host),
-		"PGPORT=" + strconv.Itoa(int(s.Port)),
-		"PGUSER=" + s.User,
-		"PGPASSWORD=" + s.Password,
-		"PGDATABASE=" + s.Database,
-	}
+	env = pgVars(s, containerHost(s.Host))
 	for _, v := range env {
 		name, _, _ := strings.Cut(v, "=")
 		pass = append(pass, "-e", name)
 	}
 	return env, pass
+}
+
+// pgVars are libpq's variables for reaching s at host.
+func pgVars(s conn.Settings, host string) []string {
+	return []string{
+		"PGHOST=" + host,
+		"PGPORT=" + strconv.Itoa(int(s.Port)),
+		"PGUSER=" + s.User,
+		"PGPASSWORD=" + s.Password,
+		"PGDATABASE=" + s.Database,
+	}
 }
 
 // Backup dumps a database to dest in pg_dump's custom format, without its rows
@@ -199,18 +206,86 @@ func Backup(ctx context.Context, s conn.Settings, image, dest string, schemaOnly
 	return os.Rename(partial, dest)
 }
 
-// Psql prepares psql from image, interactively, on s. It needs a terminal for
-// its stdin and stdout. It starts in dir, mounted read-only at /queries, so \i
-// runs the files there by their paths in dir. The connection details go in
-// docker's environment, so the password isn't in its arguments. If readOnly,
-// transactions default to read-only, as a read-only service's query tabs do.
-func Psql(ctx context.Context, s conn.Settings, readOnly bool, image, dir string) *exec.Cmd {
+// readOnlyOptions makes transactions default to read-only, as a read-only
+// service's query tabs do.
+const readOnlyOptions = "PGOPTIONS=-c default_transaction_read_only=on"
+
+// Psql prepares psql, interactively, on s. It needs a terminal for its stdin
+// and stdout, and starts in dir, so \i runs the files there by their paths in
+// dir. The connection details go in the environment, so the password isn't in
+// the arguments. If readOnly, transactions default to read-only.
+//
+// It's the Mac's own psql if there is one at least as new as the server, which
+// image is named for, as that can write files and keeps its history and
+// .psqlrc. Otherwise it's the image's, with dir mounted read-only; notice
+// says why if the Mac's psql was too old.
+func Psql(ctx context.Context, s conn.Settings, readOnly bool, image, dir string) (cmd *exec.Cmd, notice string) {
+	server, _ := strconv.Atoi(strings.TrimPrefix(image, "postgres:")) // 0 for latest, which any psql will do for
+	path, major := hostPsql(ctx)
+	if path != "" && major >= server {
+		cmd = exec.CommandContext(ctx, path)
+		cmd.Dir = dir
+		cmd.Env = append(hostEnv(), pgVars(s, s.Host)...)
+		if readOnly {
+			cmd.Env = append(cmd.Env, readOnlyOptions)
+		}
+		cmd.WaitDelay = 10 * time.Second
+		return cmd, ""
+	}
+	if path != "" {
+		notice = fmt.Sprintf("%s is psql %d, older than this server's %d, so this is psql %d in Docker, which can't write files on your Mac. Update yours to %d or later to use it here.",
+			path, major, server, server, server)
+	}
 	env, pass := pgEnv(s)
 	if readOnly {
-		env, pass = append(env, "PGOPTIONS=-c default_transaction_read_only=on"), append(pass, "-e", "PGOPTIONS")
+		env, pass = append(env, readOnlyOptions), append(pass, "-e", "PGOPTIONS")
 	}
 	return command(ctx, env, append(append([]string{"run", "--rm", "-it", "--init"}, pass...),
-		"-v", dir+":/queries:ro", "-w", "/queries", image, "psql")...)
+		"-v", dir+":/queries:ro", "-w", "/queries", image, "psql")...), notice
+}
+
+// psqlDirs are where psql lands on a Mac but an app opened from the Finder
+// won't look: Homebrew's libpq, which it doesn't link, its bin, and
+// Postgres.app. A variable for the tests.
+var psqlDirs = "/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/opt/libpq/bin:/usr/local/bin:/Applications/Postgres.app/Contents/Versions/latest/bin"
+
+var psqlVersion = regexp.MustCompile(`\(PostgreSQL\) (\d+)`)
+
+// hostPsql finds the newest psql on the Mac and its major version, or "" if
+// there's none.
+func hostPsql(ctx context.Context) (path string, major int) {
+	var found []string
+	if p, err := exec.LookPath("psql"); err == nil {
+		found = append(found, p)
+	}
+	for dir := range strings.SplitSeq(psqlDirs, ":") {
+		if p := filepath.Join(dir, "psql"); dir != "" && !slices.Contains(found, p) {
+			if _, err := os.Stat(p); err == nil {
+				found = append(found, p)
+			}
+		}
+	}
+	for _, p := range found {
+		out, err := exec.CommandContext(ctx, p, "--version").Output()
+		if m := psqlVersion.FindSubmatch(out); err == nil && m != nil {
+			if v, _ := strconv.Atoi(string(m[1])); v > major {
+				path, major = p, v
+			}
+		}
+	}
+	return path, major
+}
+
+// hostEnv is pg's own environment for the Mac's psql, less any libpq
+// variables, as the container's psql gets none either. An app opened from the
+// Finder has no TERM or LANG, which psql needs to edit lines in the terminal.
+func hostEnv() []string {
+	env := slices.DeleteFunc(os.Environ(), func(v string) bool { return strings.HasPrefix(v, "PG") })
+	env = append(env, "TERM=xterm-256color")
+	if os.Getenv("LANG") == "" {
+		env = append(env, "LANG=en_US.UTF-8")
+	}
+	return env
 }
 
 // Sandbox is a throwaway Postgres in a container, holding a restored backup.

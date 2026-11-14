@@ -655,11 +655,11 @@ func TestPsql(t *testing.T) {
 	// sh stands in for docker: it reads a line, then says what it got and its size.
 	var started []string
 	real := startPsql
-	startPsql = func(ctx context.Context, settings conn.Settings, readOnly bool, image, dir string) (*os.File, *exec.Cmd, error) {
+	startPsql = func(ctx context.Context, settings conn.Settings, readOnly bool, image, dir string) (*os.File, *exec.Cmd, string, error) {
 		started = append(started, fmt.Sprint(readOnly, " ", image, " ", dir))
 		cmd := exec.CommandContext(ctx, "sh", "-c", "read line; echo \"got:$line size:$(stty size)\"; [ \"$line\" = wait ] && sleep 30")
 		f, err := pty.Start(cmd)
-		return f, cmd, err
+		return f, cmd, "your psql is old", err
 	}
 	t.Cleanup(func() { startPsql = real })
 
@@ -683,7 +683,8 @@ func TestPsql(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("hello\n")))
 	// Returns once sh exits, having streamed all it wrote.
-	if got := get(t, s, http.MethodGet, "/psql/out").Body.String(); !strings.Contains(got, "got:hello size:40 100") {
+	// The notice comes first, then what psql wrote.
+	if got := get(t, s, http.MethodGet, "/psql/out").Body.String(); !strings.HasPrefix(got, "\x1b[33myour psql is old\x1b[0m\r\n") || !strings.Contains(got, "got:hello size:40 100") {
 		t.Errorf("output = %q", got)
 	}
 
