@@ -46,6 +46,7 @@ var groups = map[string][]Node{
 		{Label: "Indexes", Kind: "indexes"},
 		{Label: "Constraints", Kind: "constraints"},
 		{Label: "Triggers", Kind: "triggers"},
+		{Label: "Rules", Kind: "rules"},
 	},
 	"partitioned": {
 		{Label: "Partitions", Kind: "partitions"},
@@ -53,9 +54,11 @@ var groups = map[string][]Node{
 		{Label: "Indexes", Kind: "indexes"},
 		{Label: "Constraints", Kind: "constraints"},
 		{Label: "Triggers", Kind: "triggers"},
+		{Label: "Rules", Kind: "rules"},
 	},
 	"view": {
 		{Label: "Columns", Kind: "columns"},
+		{Label: "Rules", Kind: "rules"},
 	},
 	"matview": {
 		{Label: "Columns", Kind: "columns"},
@@ -274,6 +277,12 @@ var queries = map[string]string{
 		from pg_trigger
 		where tgrelid = $1 and not tgisinternal
 		order by 1`,
+	// _RETURN is the rule that makes a view a view, which its definition shows.
+	"rules": `
+		select rulename, pg_get_ruledef(oid, true), '', '', '', ''
+		from pg_rewrite
+		where ev_class = $1 and rulename <> '_RETURN'
+		order by 1`,
 	// position rather than like, so % and _ in the term are literal.
 	// shortcut: stops at 200 matches, add paging if that proves too few.
 	SearchKind: `
@@ -409,12 +418,13 @@ var definitions = map[string]string{
 	// shortcut: leaves out inheritance, storage options and grants, which its
 	// first line says. Use pg_dump's output if those ever matter here.
 	"table": `
-		select format(E'-- Rebuilt from the catalogs: no inheritance, storage options or grants.\ncreate table %I.%I (\n%s\n)%s;%s%s',
+		select format(E'-- Rebuilt from the catalogs: no inheritance, storage options or grants.\ncreate table %I.%I (\n%s\n)%s;%s%s%s',
 			n.nspname, c.relname,
 			array_to_string(cols.lines || cons.lines, E',\n'),
 			case when c.relkind = 'p' then ' partition by ' || pg_get_partkeydef(c.oid) else '' end,
 			coalesce(idx.lines, ''),
-			coalesce(trg.lines, ''))
+			coalesce(trg.lines, ''),
+			coalesce(rul.lines, ''))
 		from pg_class c
 		join pg_namespace n on n.oid = c.relnamespace
 		cross join lateral (
@@ -447,6 +457,11 @@ var definitions = map[string]string{
 			from pg_trigger t
 			where t.tgrelid = c.oid and not t.tgisinternal
 		) trg
+		cross join lateral (
+			select string_agg(E'\n' || pg_get_ruledef(r.oid, true), '' order by r.rulename) lines
+			from pg_rewrite r
+			where r.ev_class = c.oid
+		) rul
 		where c.oid = $1`,
 }
 

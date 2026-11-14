@@ -404,6 +404,8 @@ func nodeIcon(n catalog.Node) string {
 		return "shield-check"
 	case "triggers":
 		return "zap"
+	case "rules":
+		return "replace"
 	case "grants":
 		return "key-round"
 	case "":

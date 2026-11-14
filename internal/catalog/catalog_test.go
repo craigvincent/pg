@@ -71,9 +71,12 @@ func TestWalk(t *testing.T) {
 		create temp table "Odd ""name" (id int primary key, label varchar(10) default 'x', extra int generated always as (id * 2) stored);
 		create index on "Odd ""name" (label);
 		create trigger odd_trigger before update on "Odd ""name" for each row execute function suppress_redundant_updates_trigger();
+		create rule odd_rule as on delete to "Odd ""name" do instead nothing;
 		create temp table parted (id int) partition by range (id);
 		create temp table parted_low partition of parted for values from (1) to (10);
+		create rule parted_rule as on delete to parted do instead nothing;
 		create temp view odd_view as select 1 as one;
+		create rule odd_view_rule as on delete to odd_view do instead nothing;
 		create function pg_temp.odd_function() returns int language sql as 'select 1';
 		create function pg_temp.odd_trigger_function() returns trigger language plpgsql as 'begin return new; end';
 		create temp sequence odd_seq;
@@ -100,8 +103,11 @@ func TestWalk(t *testing.T) {
 	if table.Kind != "table" || parted.Kind != "partitioned" {
 		t.Errorf("table kinds = %q, %q", table.Kind, parted.Kind)
 	}
-	if got := labels(children(t, c, parted.Kind, parted.ID)); got[0] != "Partitions" {
+	if got := labels(children(t, c, parted.Kind, parted.ID)); got[0] != "Partitions" || got[len(got)-1] != "Rules" {
 		t.Errorf("partitioned groups = %v", got)
+	}
+	if r := children(t, c, "rules", parted.ID); len(r) != 1 || r[0].Label != "parted_rule" {
+		t.Errorf("partitioned rules = %+v", r)
 	}
 	if got := children(t, c, "partitions", parted.ID); len(got) != 1 || got[0].Label != "parted_low" || got[0].Kind != "table" {
 		t.Errorf("partitions = %+v", got)
@@ -114,7 +120,7 @@ func TestWalk(t *testing.T) {
 	}
 
 	groups := children(t, c, table.Kind, table.ID)
-	if got := labels(groups); !slices.Equal(got, []string{"Columns", "Indexes", "Constraints", "Triggers"}) {
+	if got := labels(groups); !slices.Equal(got, []string{"Columns", "Indexes", "Constraints", "Triggers", "Rules"}) {
 		t.Errorf("table groups = %v", got)
 	}
 	if groups[0].ID != table.ID {
@@ -137,6 +143,9 @@ func TestWalk(t *testing.T) {
 
 	if trg := children(t, c, "triggers", table.ID); len(trg) != 1 || trg[0].Label != "odd_trigger" {
 		t.Errorf("triggers = %+v", trg)
+	}
+	if r := children(t, c, "rules", table.ID); len(r) != 1 || r[0].Label != "odd_rule" || !strings.Contains(r[0].Detail, "DO INSTEAD NOTHING") {
+		t.Errorf("rules = %+v", r)
 	}
 
 	// The estimate appears once the table has been analyzed.
@@ -171,14 +180,14 @@ func TestWalk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"id integer not null", "default 'x'", "generated always as ((id * 2)) stored", "PRIMARY KEY (id)", "CREATE INDEX", "CREATE TRIGGER odd_trigger"} {
+	for _, want := range []string{"id integer not null", "default 'x'", "generated always as ((id * 2)) stored", "PRIMARY KEY (id)", "CREATE INDEX", "CREATE TRIGGER odd_trigger", "CREATE RULE odd_rule"} {
 		if !strings.Contains(def, want) {
 			t.Errorf("definition lacks %q:\n%s", want, def)
 		}
 	}
 	rerun := strings.NewReplacer(schema+".", "defcheck.", `"Odd ""name_pkey"`, "defcheck_pkey",
 		`"Odd ""name_label_idx" ON pg_temp.`, "defcheck_idx ON defcheck.",
-		`ON pg_temp."Odd ""name"`, `ON defcheck."Odd ""name"`).Replace(def)
+		`ON pg_temp."Odd ""name"`, `ON defcheck."Odd ""name"`, `TO "Odd ""name"`, `TO defcheck."Odd ""name"`).Replace(def)
 	if _, err := c.conn.Exec(ctx, "begin; create schema defcheck; "+rerun).ReadAll(); err != nil {
 		t.Errorf("table definition does not run: %v\n%s", err, rerun)
 	}
@@ -187,6 +196,9 @@ func TestWalk(t *testing.T) {
 	}
 
 	view := children(t, c, "views", schema)[0]
+	if r := children(t, c, "rules", view.ID); len(r) != 1 || r[0].Label != "odd_view_rule" {
+		t.Errorf("view rules = %+v, want odd_view_rule without _RETURN", r)
+	}
 	if def, err := c.Definition(ctx, view.Def, view.ID); err != nil || !strings.Contains(def, "create or replace view") {
 		t.Errorf("view definition = %q, %v", def, err)
 	}
@@ -255,7 +267,8 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", n.Label, err)
 		}
-		script.WriteString(strings.ReplaceAll(def, schema+".", "defcheck.") + "\n")
+		script.WriteString(strings.ReplaceAll(def, schema+".", "defcheck."))
+		script.WriteByte('\n')
 	}
 	if _, err := c.conn.Exec(ctx, script.String()).ReadAll(); err != nil {
 		t.Errorf("definitions don't run: %v\n%s", err, script.String())
