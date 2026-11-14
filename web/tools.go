@@ -105,31 +105,40 @@ func (t *psqlTerm) pump(ctx context.Context) {
 	}
 }
 
-// psqlOutput streams psql's output to the tab until psql exits or the tab
-// stops listening.
+// psqlOutput returns what psql has written since the last call, waiting for
+// some if there's none yet, or no content once psql has exited. Each call is
+// a whole response rather than one long stream, as WebKit can hold back the
+// tail of a stream until more arrives, which left psql's prompt undrawn until
+// the next key.
 func (s *Server) psqlOutput(w http.ResponseWriter, r *http.Request) {
 	t := s.psql()
 	if t == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	rc := http.NewResponseController(w)
-	for {
-		select {
-		case b, ok := <-t.out:
-			if !ok {
-				return
-			}
-			if _, err := w.Write(b); err != nil {
-				return
-			}
-			_ = rc.Flush()
-		case <-r.Context().Done():
+	var out []byte
+	select {
+	case b, ok := <-t.out:
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		out = b
+	case <-r.Context().Done():
+		return
 	}
+	// Whatever else is ready goes too, so a burst takes one round trip. Once
+	// psql has exited, the next call says so.
+	for more := true; more; {
+		select {
+		case b, ok := <-t.out:
+			out, more = append(out, b...), ok
+		default:
+			more = false
+		}
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(out)
 }
 
 // psqlInput types what the tab sends into psql.

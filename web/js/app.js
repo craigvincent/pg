@@ -343,8 +343,9 @@ const showActivity = () => showTool("activity");
 const showHealth = () => showTool("health", "");
 const showHistory = () => showTool("history", "m-3").then(() => document.querySelector("#history-search")?.focus());
 
-// psql, in a terminal in its tab. Its output streams in one long response, as
-// the app's window can't do WebSockets, and keys and sizes go back as posts.
+// psql, in a terminal in its tab. Its output comes by asking again as each
+// response arrives, as the app's window can't do WebSockets, and keys and
+// sizes go back as posts.
 let term, fit, psqlExited, typed = "", typing = false;
 
 async function showPsql() {
@@ -373,9 +374,13 @@ async function runPsql(t) {
 		return closeTab("psql");
 	}
 	fetch(`/psql/size?cols=${t.cols}&rows=${t.rows}`, { method: "POST" });
-	const reader = (await fetch("/psql/out")).body.getReader();
-	for (let chunk; !(chunk = await reader.read()).done; ) t.write(chunk.value);
-	if (t !== term) return; // its tab closed
+	// Each response is what psql wrote since the last, until none once it
+	// exits. Not one long stream, as WebKit can hold back a stream's tail.
+	for (let res; (res = await fetch("/psql/out")).status === 200; ) {
+		if (t !== term) return; // its tab closed
+		t.write(new Uint8Array(await res.arrayBuffer()));
+	}
+	if (t !== term) return;
 	t.write("\r\n[psql has exited: press a key to start it again]\r\n");
 	psqlExited = true;
 }

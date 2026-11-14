@@ -682,9 +682,20 @@ func TestPsql(t *testing.T) {
 	get(t, s, http.MethodPost, "/psql/size?cols=100&rows=40")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("hello\n")))
-	// Returns once sh exits, having streamed all it wrote.
-	// The notice comes first, then what psql wrote.
-	if got := get(t, s, http.MethodGet, "/psql/out").Body.String(); !strings.HasPrefix(got, "\x1b[33myour psql is old\x1b[0m\r\n") || !strings.Contains(got, "got:hello size:40 100") {
+	// Each read returns what's ready, the notice first, until no content once
+	// sh has exited.
+	var all strings.Builder
+	for {
+		got, code := readPsql(t, s)
+		if code == http.StatusNoContent {
+			break
+		}
+		if code != http.StatusOK || got == "" {
+			t.Fatalf("read = %d %q, after %q", code, got, all.String())
+		}
+		all.WriteString(got)
+	}
+	if got := all.String(); !strings.HasPrefix(got, "\x1b[33myour psql is old\x1b[0m\r\n") || !strings.Contains(got, "got:hello size:40 100") {
 		t.Errorf("output = %q", got)
 	}
 
@@ -696,6 +707,15 @@ func TestPsql(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("wait\n")))
+	// What it wrote comes back while it's still running, not once it exits:
+	// WebKit held back the end of a response that hadn't finished.
+	for all.Reset(); !strings.Contains(all.String(), "got:wait"); {
+		got, code := readPsql(t, s)
+		if code != http.StatusOK || got == "" {
+			t.Fatalf("read while running = %d %q, after %q", code, got, all.String())
+		}
+		all.WriteString(got)
+	}
 	stopped := make(chan struct{})
 	go func() { s.Close(); close(stopped) }()
 	select {
@@ -706,6 +726,16 @@ func TestPsql(t *testing.T) {
 	if s.psql() != nil {
 		t.Error("psql still there after Close")
 	}
+}
+
+// readPsql reads psql's output once, giving up after a few seconds.
+func readPsql(t *testing.T, s *Server) (string, int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/psql/out", nil).WithContext(ctx))
+	return w.Body.String(), w.Code
 }
 
 func TestFailedConnectResetsTheDropdown(t *testing.T) {
