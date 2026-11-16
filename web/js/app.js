@@ -12,7 +12,7 @@ import { Terminal } from "@xterm/xterm";
 import {
 	Activity, AlignLeft, Archive, Bookmark, Box, ChevronDown, Columns3, Copy, CopyX, Database, Download, Eye, FileCode, FileInput,
 	FilePen, Folder, FolderOpen, Gauge, Hash, HeartPulse, History, KeyRound, Languages, Layers, ListTree, Play, Plus, Puzzle, RefreshCw, Replace, Save,
-	Search, Server, Settings, Shapes, ShieldCheck, Square, SquareFunction, SquareTerminal, Star, SunMoon, Table2, Trash2, User, Users, X, Zap, createIcons,
+	Search, Server, Settings, Shapes, ShieldCheck, Sigma, Square, SquareFunction, SquareTerminal, Star, SunMoon, Table2, Trash2, User, Users, X, Zap, createIcons,
 } from "lucide";
 import { fillParams, paramNames } from "./params.mjs";
 import { warningFor } from "./risky.mjs";
@@ -30,7 +30,7 @@ const MIN_PANE = 80; // the smallest a dragged pane gets; what's beside it keeps
 const icons = {
 	Activity, AlignLeft, Archive, Bookmark, Box, ChevronDown, Columns3, Copy, CopyX, Database, Download, Eye, FileCode, FileInput,
 	FilePen, Folder, FolderOpen, Gauge, Hash, HeartPulse, History, KeyRound, Languages, Layers, ListTree, Play, Plus, Puzzle, RefreshCw, Replace, Save,
-	Search, Server, Settings, Shapes, ShieldCheck, Square, SquareFunction, SquareTerminal, Star, SunMoon, Table2, Trash2, User, Users, X, Zap,
+	Search, Server, Settings, Shapes, ShieldCheck, Sigma, Square, SquareFunction, SquareTerminal, Star, SunMoon, Table2, Trash2, User, Users, X, Zap,
 };
 // Only within root: the SVGs keep data-lucide, so drawing the whole page
 // again redraws every icon there, which made each tree expand slower.

@@ -420,6 +420,8 @@ func nodeIcon(n catalog.Node) string {
 		switch n.Def {
 		case "function":
 			return "square-function"
+		case "aggregate":
+			return "sigma"
 		case "sequence":
 			return "hash"
 		case "type", "domain":
@@ -443,7 +445,7 @@ func nodeIconColour(icon string) string {
 		return "text-info"
 	case "eye", "box":
 		return "text-secondary"
-	case "square-function":
+	case "square-function", "sigma":
 		return "text-accent"
 	}
 	return "text-base-content/50"

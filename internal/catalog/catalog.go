@@ -83,8 +83,9 @@ const (
 	ownRole = `r.rolname !~ '^pg_'`
 	// ownFunction hides functions that belong to an extension, of which there
 	// can be hundreds. p is pg_proc.
-	ownFunction = `p.prokind in ('f', 'p') and not exists (
-		select 1 from pg_depend d
+	ownFunction   = `p.prokind in ('f', 'p') and not ` + extensionProc
+	ownAggregate  = `p.prokind = 'a' and not ` + extensionProc
+	extensionProc = `exists (select 1 from pg_depend d
 		where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')`
 	// triggerFunction is true of the functions pgAdmin groups separately, as
 	// they're only ever called by triggers. p is pg_proc.
@@ -219,7 +220,7 @@ var queries = map[string]string{
 				p.proacl, p.proowner
 			from pg_proc p
 			join pg_namespace n on n.oid = p.pronamespace
-			where p.proacl is not null and ` + ownFunction + ` and ` + userSchema + `
+			where p.proacl is not null and (` + ownFunction + ` or ` + ownAggregate + `) and ` + userSchema + `
 		) o
 		cross join lateral aclexplode(o.acl) a
 		where a.grantee = $1 and a.grantee <> o.owner
@@ -234,10 +235,11 @@ var queries = map[string]string{
 			(3, 'Materialized views', 'matviews', (select count(*) from pg_class c where c.relnamespace = n.oid and c.relkind = 'm')),
 			(4, 'Functions', 'functions', (select count(*) from pg_proc p where p.pronamespace = n.oid and ` + ownFunction + ` and not ` + triggerFunction + `)),
 			(5, 'Trigger functions', 'triggerfunctions', (select count(*) from pg_proc p where p.pronamespace = n.oid and ` + ownFunction + ` and ` + triggerFunction + `)),
-			(6, 'Sequences', 'sequences', (select count(*) from pg_class c where c.relnamespace = n.oid and c.relkind = 'S')),
-			(7, 'Collations', 'collations', (select count(*) from pg_collation l where l.collnamespace = n.oid and ` + ownCollation + `)),
-			(8, 'Domains', 'domains', (select count(*) from pg_type t where t.typnamespace = n.oid and ` + ownDomain + `)),
-			(9, 'Types', 'types', (select count(*) from pg_type t where t.typnamespace = n.oid and ` + ownType + `))
+			(6, 'Aggregates', 'aggregates', (select count(*) from pg_proc p where p.pronamespace = n.oid and ` + ownAggregate + `)),
+			(7, 'Sequences', 'sequences', (select count(*) from pg_class c where c.relnamespace = n.oid and c.relkind = 'S')),
+			(8, 'Collations', 'collations', (select count(*) from pg_collation l where l.collnamespace = n.oid and ` + ownCollation + `)),
+			(9, 'Domains', 'domains', (select count(*) from pg_type t where t.typnamespace = n.oid and ` + ownDomain + `)),
+			(10, 'Types', 'types', (select count(*) from pg_type t where t.typnamespace = n.oid and ` + ownType + `))
 		) g(ord, label, kind, total)
 		where n.nspname = $1 and g.total > 0
 		order by g.ord`,
@@ -256,6 +258,13 @@ var queries = map[string]string{
 		order by 1`,
 	"functions":        functions(`not `+triggerFunction, `pg_get_function_result(p.oid)`),
 	"triggerfunctions": functions(triggerFunction, `''`),
+	"aggregates": `
+		select p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
+			pg_get_function_result(p.oid), '', '', p.oid::text, 'aggregate', obj_description(p.oid, 'pg_proc')
+		from pg_proc p
+		join pg_namespace n on n.oid = p.pronamespace
+		where n.nspname = $1 and ` + ownAggregate + `
+		order by 1`,
 	"collations": `
 		select l.collname, ` + collationProvider + `, '', '', l.oid::text, 'collation',
 			obj_description(l.oid, 'pg_collation')
@@ -321,10 +330,11 @@ var queries = map[string]string{
 				and position(lower($1) in lower(c.relname)) > 0
 			union all
 			select p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
-				n.nspname::text, '', '', p.oid::text, 'function'
+				n.nspname::text, '', '', p.oid::text,
+				case p.prokind when 'a' then 'aggregate' else 'function' end
 			from pg_proc p
 			join pg_namespace n on n.oid = p.pronamespace
-			where ` + ownFunction + ` and ` + userSchema + `
+			where (` + ownFunction + ` or ` + ownAggregate + `) and ` + userSchema + `
 				and position(lower($1) in lower(p.proname)) > 0
 			union all
 			select l.collname, n.nspname::text, '', '', l.oid::text, 'collation'
@@ -389,6 +399,22 @@ var definitions = map[string]string{
 		from pg_class c
 		join pg_namespace n on n.oid = c.relnamespace
 		where c.oid = $1`,
+	// pg_get_functiondef refuses aggregates, so this one is put together by hand.
+	// shortcut: leaves out the moving-aggregate and serial/deserial options
+	// and ordered-set aggregates' direct arguments, add them if one turns up.
+	"aggregate": `
+		select format(E'create aggregate %I.%I(%s) (\n    sfunc = %s,\n    stype = %s%s%s%s%s%s\n);',
+			n.nspname, p.proname, pg_get_function_identity_arguments(p.oid),
+			a.aggtransfn::regproc, format_type(a.aggtranstype, null),
+			case when a.aggtransspace <> 0 then E',\n    sspace = ' || a.aggtransspace else '' end,
+			case when a.aggfinalfn <> 0 then E',\n    finalfunc = ' || a.aggfinalfn::regproc else '' end,
+			case when a.aggcombinefn <> 0 then E',\n    combinefunc = ' || a.aggcombinefn::regproc else '' end,
+			case when a.agginitval is not null then E',\n    initcond = ' || quote_literal(a.agginitval) else '' end,
+			case when a.aggsortop <> 0 then E',\n    sortop = operator(' || a.aggsortop::regoper || ')' else '' end)
+		from pg_aggregate a
+		join pg_proc p on p.oid = a.aggfnoid
+		join pg_namespace n on n.oid = p.pronamespace
+		where a.aggfnoid = $1`,
 	"extension": `
 		select format('create extension %I with schema %I version %L;', e.extname, n.nspname, e.extversion)
 		from pg_extension e

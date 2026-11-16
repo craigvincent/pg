@@ -100,6 +100,7 @@ func TestWalk(t *testing.T) {
 		comment on table "Odd ""name" is 'odd table';
 		comment on column "Odd ""name".label is 'odd label';
 		comment on function pg_temp.odd_function() is 'odd function';
+		create aggregate pg_temp.odd_sum(int) (sfunc = int4pl, stype = int, initcond = '0');
 		select pg_my_temp_schema()::regnamespace::text`
 	res, err := c.conn.Exec(context.Background(), setup).ReadAll()
 	if err != nil {
@@ -108,7 +109,7 @@ func TestWalk(t *testing.T) {
 	schema := string(res[len(res)-1].Rows[0][0])
 
 	schemaGroups := children(t, c, "schema", schema)
-	if got := labels(schemaGroups); !slices.Equal(got, []string{"Tables", "Views", "Functions", "Trigger functions", "Sequences"}) {
+	if got := labels(schemaGroups); !slices.Equal(got, []string{"Tables", "Views", "Functions", "Trigger functions", "Aggregates", "Sequences"}) {
 		t.Errorf("schema groups = %v", got)
 	}
 	if schemaGroups[0].Detail != "2" || schemaGroups[2].Detail != "1" || schemaGroups[3].Detail != "1" || schemaGroups[0].ID != schema {
@@ -190,6 +191,14 @@ func TestWalk(t *testing.T) {
 	}
 	if f := children(t, c, "functions", schema); len(f) != 1 || f[0].Label != "odd_function()" || f[0].Detail != "integer" || f[0].Comment != "odd function" {
 		t.Errorf("functions = %+v", f)
+	}
+	agg := children(t, c, "aggregates", schema)
+	if len(agg) != 1 || agg[0].Label != "odd_sum(integer)" || agg[0].Detail != "integer" {
+		t.Fatalf("aggregates = %+v", agg)
+	}
+	if def, err := c.Definition(context.Background(), agg[0].Def, agg[0].ID); err != nil ||
+		!strings.HasSuffix(def, ".odd_sum(integer) (\n    sfunc = int4pl,\n    stype = integer,\n    initcond = '0'\n);") {
+		t.Errorf("aggregate definition = %q, %v", def, err)
 	}
 	f := children(t, c, "triggerfunctions", schema)
 	if len(f) != 1 || f[0].Label != "odd_trigger_function()" || f[0].Detail != "" {
