@@ -88,10 +88,10 @@ func TestWalk(t *testing.T) {
 	schema := string(res[len(res)-1].Rows[0][0])
 
 	schemaGroups := children(t, c, "schema", schema)
-	if got := labels(schemaGroups); !slices.Equal(got, []string{"Tables", "Views", "Materialized views", "Functions", "Trigger functions", "Sequences", "Collations", "Domains", "Types"}) {
+	if got := labels(schemaGroups); !slices.Equal(got, []string{"Tables", "Views", "Functions", "Trigger functions", "Sequences"}) {
 		t.Errorf("schema groups = %v", got)
 	}
-	if schemaGroups[0].Detail != "2" || schemaGroups[3].Detail != "1" || schemaGroups[4].Detail != "1" || schemaGroups[0].ID != schema {
+	if schemaGroups[0].Detail != "2" || schemaGroups[2].Detail != "1" || schemaGroups[3].Detail != "1" || schemaGroups[0].ID != schema {
 		t.Errorf("schema group details = %+v", schemaGroups)
 	}
 
@@ -496,7 +496,7 @@ func TestRoles(t *testing.T) {
 	if member.Detail != "login" || member.Kind != "role" || member.Def != "role" {
 		t.Errorf("member node = %+v", member)
 	}
-	if got := labels(children(t, c, "role", member.ID)); !slices.Equal(got, []string{"Member of", "Members", "Grants in this database"}) {
+	if got := labels(children(t, c, "role", member.ID)); !slices.Equal(got, []string{"Member of", "Grants in this database"}) {
 		t.Errorf("role groups = %q", got)
 	}
 	if got := children(t, c, "memberof", member.ID); len(got) != 1 || got[0].Label != "pgide_group" || got[0].Detail != "with admin option" {

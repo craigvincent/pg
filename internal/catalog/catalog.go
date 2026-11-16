@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -39,7 +40,7 @@ type Node struct {
 }
 
 // groups are the fixed folders under a relation. Their children use the same
-// id as the parent.
+// id as the parent, and only those with something in them are shown.
 var groups = map[string][]Node{
 	"table": {
 		{Label: "Columns", Kind: "columns"},
@@ -219,7 +220,7 @@ var queries = map[string]string{
 			(8, 'Domains', 'domains', (select count(*) from pg_type t where t.typnamespace = n.oid and ` + ownDomain + `)),
 			(9, 'Types', 'types', (select count(*) from pg_type t where t.typnamespace = n.oid and ` + ownType + `))
 		) g(ord, label, kind, total)
-		where n.nspname = $1
+		where n.nspname = $1 and g.total > 0
 		order by g.ord`,
 	// Partitions are listed under their parent, as pgAdmin does.
 	"tables":    relations(`c.relkind in ('r', 'p') and not c.relispartition`, tableKind, "table"),
@@ -484,12 +485,7 @@ func New(connect func(context.Context) (*pgconn.PgConn, error)) *Catalog {
 // RootKind, which has no id.
 func (c *Catalog) Children(ctx context.Context, kind, id string) ([]Node, error) {
 	if g, ok := groups[kind]; ok {
-		nodes := make([]Node, len(g))
-		for i, n := range g {
-			n.ID = id
-			nodes[i] = n
-		}
-		return nodes, nil
+		return c.nonEmpty(ctx, g, id)
 	}
 	if kind == SearchKind && id == "" {
 		kind = RootKind
@@ -515,6 +511,26 @@ func (c *Catalog) Children(ctx context.Context, kind, id string) ([]Node, error)
 			Kind:   string(r[3]),
 			ID:     string(r[4]),
 			Def:    string(r[5]),
+		}
+	}
+	return nodes, nil
+}
+
+// nonEmpty is the groups that have anything in them, found in one round trip.
+func (c *Catalog) nonEmpty(ctx context.Context, groups []Node, id string) ([]Node, error) {
+	checks := make([]string, len(groups))
+	for i, g := range groups {
+		checks[i] = "exists(" + queries[g.Kind] + ")"
+	}
+	rows, err := c.read(ctx, "select "+strings.Join(checks, ", "), [][]byte{[]byte(id)})
+	if err != nil {
+		return nil, err
+	}
+	var nodes []Node
+	for i, g := range groups {
+		if string(rows[0][i]) == "t" {
+			g.ID = id
+			nodes = append(nodes, g)
 		}
 	}
 	return nodes, nil
