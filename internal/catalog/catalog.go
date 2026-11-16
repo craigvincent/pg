@@ -421,12 +421,13 @@ var definitions = map[string]string{
 		join pg_namespace n on n.oid = l.collnamespace
 		where l.oid = $1`,
 	"domain": `
-		select format('create domain %I.%I as %s%s%s%s;', n.nspname, t.typname,
+		select format('create domain %I.%I as %s%s%s;%s', n.nspname, t.typname,
 			format_type(t.typbasetype, t.typtypmod),
 			case when t.typdefault is not null then ' default ' || t.typdefault else '' end,
 			case when t.typnotnull then ' not null' else '' end,
+			-- Each its own statement, as only alter domain takes NOT VALID.
 			coalesce((
-				select string_agg(format(E'\n    constraint %I %s', k.conname, pg_get_constraintdef(k.oid)), '' order by k.conname)
+				select string_agg(format(E'\nalter domain %I.%I add constraint %I %s;', n.nspname, t.typname, k.conname, pg_get_constraintdef(k.oid)), '' order by k.conname)
 				from pg_constraint k
 				where k.contypid = t.oid and k.contype <> 'n'), ''))
 		from pg_type t

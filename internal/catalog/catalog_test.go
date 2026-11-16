@@ -243,6 +243,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 		create type pg_temp.odd_composite as (id int, label varchar(10));
 		create type pg_temp.odd_range as range (subtype = int4);
 		create domain pg_temp.odd_domain as int default 1 not null constraint positive check (value > 0);
+		alter domain pg_temp.odd_domain add constraint small check (value < 100) not valid;
 		create collation pg_temp.odd_collation (provider = libc, locale = 'C');
 		select pg_my_temp_schema()::regnamespace::text`
 	res, err := c.conn.Exec(ctx, setup).ReadAll()
@@ -297,7 +298,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 	}
 
 	def, err := c.Definition(ctx, domains[0].Def, domains[0].ID, nil)
-	for _, want := range []string{"default 1", "not null", "constraint positive CHECK"} {
+	for _, want := range []string{"default 1", "not null;", "add constraint positive CHECK ((VALUE > 0));", "add constraint small CHECK ((VALUE < 100)) NOT VALID;"} {
 		if err != nil || !strings.Contains(def, want) {
 			t.Errorf("domain definition lacks %q: %q, %v", want, def, err)
 		}
