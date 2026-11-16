@@ -924,6 +924,60 @@ func TestPsql(t *testing.T) {
 	}
 }
 
+func TestDump(t *testing.T) {
+	settings := conn.Settings{Host: "localhost", Port: 5418, User: "postgres", Password: "it's", Database: "app"}
+	t.Setenv("PGSERVICE", "elsewhere") // the user's own, which mustn't reach pg_dump
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	old := psqlDirs
+	psqlDirs = ""
+	t.Cleanup(func() { psqlDirs = old })
+	// pg_dump 18's output, much shortened. It notes how it was run in ran.
+	script := `#!/bin/sh
+[ "$1" = --version ] && { echo 'pg_dump (PostgreSQL) 18.1'; exit; }
+echo "$* $PGHOST $PGPASSWORD $PGSERVICE" > "${0%/*}/ran"
+[ "$2" = --table=none ] && { printf -- '--\n-- PostgreSQL database dump\n--\n\nSET statement_timeout = 0;\n'; exit; }
+/bin/cat <<'END'
+--
+-- PostgreSQL database dump
+--
+
+\restrict abc
+
+SET statement_timeout = 0;
+SELECT pg_catalog.set_config('search_path', '', false);
+
+--
+-- Name: t; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.t (
+    id integer
+);
+
+
+ALTER TABLE public.t OWNER TO postgres;
+
+\unrestrict abc
+
+END
+`
+	if err := os.WriteFile(filepath.Join(dir, "pg_dump"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ddl, err := Dump(t.Context(), settings, "postgres:18", `"public"."t"`)
+	want := "CREATE TABLE public.t (\n    id integer\n);\n\nALTER TABLE public.t OWNER TO postgres;"
+	if err != nil || ddl != want {
+		t.Errorf("Dump = %q, %v\nwant %q", ddl, err, want)
+	}
+	if ran, _ := os.ReadFile(filepath.Join(dir, "ran")); string(ran) != `--schema-only --table="public"."t" localhost it's `+"\n" {
+		t.Errorf("ran %q", ran)
+	}
+	if _, err := Dump(t.Context(), settings, "postgres:18", "none"); err == nil || !strings.Contains(err.Error(), "identity column") {
+		t.Errorf("nothing dumped: err = %v", err)
+	}
+}
+
 func TestRunSurvivesALongLine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

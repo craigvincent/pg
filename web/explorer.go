@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"pg/internal/catalog"
+	"pg/internal/dockerpg"
 )
 
 func (s *Server) tree(w http.ResponseWriter, r *http.Request) {
@@ -31,9 +32,15 @@ func (s *Server) definition(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "connect to a service first", http.StatusConflict)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	s.mu.Lock()
+	settings, image := s.settings, s.image
+	s.mu.Unlock()
+	// pg_dump may be Docker's, which takes a few seconds to start.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	def, err := cat.Definition(ctx, r.FormValue("def"), r.FormValue("id"))
+	def, err := cat.Definition(ctx, r.FormValue("def"), r.FormValue("id"), func(ctx context.Context, pattern string) (string, error) {
+		return dockerpg.Dump(ctx, settings, image, pattern)
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

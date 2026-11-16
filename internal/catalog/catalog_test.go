@@ -73,7 +73,7 @@ func TestExtensions(t *testing.T) {
 	if !strings.Contains(p.Detail, " in pg_catalog") || p.Comment == "" || p.Def != "extension" {
 		t.Errorf("plpgsql = %+v", p)
 	}
-	def, err := c.Definition(context.Background(), p.Def, p.ID)
+	def, err := c.Definition(context.Background(), p.Def, p.ID, nil)
 	if err != nil || !strings.HasPrefix(def, "create extension plpgsql with schema pg_catalog version ") {
 		t.Errorf("definition = %q, %v", def, err)
 	}
@@ -96,6 +96,7 @@ func TestWalk(t *testing.T) {
 		create rule odd_view_rule as on delete to odd_view do instead nothing;
 		create function pg_temp.odd_function() returns int language sql as 'select 1';
 		create function pg_temp.odd_trigger_function() returns trigger language plpgsql as 'begin return new; end';
+		create constraint trigger odd_check after insert on "Odd ""name" for each row execute function pg_temp.odd_trigger_function();
 		create temp sequence odd_seq;
 		comment on table "Odd ""name" is 'odd table';
 		comment on column "Odd ""name".label is 'odd label';
@@ -168,7 +169,7 @@ func TestWalk(t *testing.T) {
 		t.Errorf("constraints = %+v", con)
 	}
 
-	if trg := children(t, c, "triggers", table.ID); len(trg) != 1 || trg[0].Label != "odd_trigger" {
+	if trg := children(t, c, "triggers", table.ID); len(trg) != 2 || trg[0].Label != "odd_check" || trg[1].Label != "odd_trigger" {
 		t.Errorf("triggers = %+v", trg)
 	}
 	if r := children(t, c, "rules", table.ID); len(r) != 1 || r[0].Label != "odd_rule" || !strings.Contains(r[0].Detail, "DO INSTEAD NOTHING") {
@@ -196,7 +197,7 @@ func TestWalk(t *testing.T) {
 	if len(agg) != 1 || agg[0].Label != "odd_sum(integer)" || agg[0].Detail != "integer" {
 		t.Fatalf("aggregates = %+v", agg)
 	}
-	if def, err := c.Definition(context.Background(), agg[0].Def, agg[0].ID); err != nil ||
+	if def, err := c.Definition(context.Background(), agg[0].Def, agg[0].ID, nil); err != nil ||
 		!strings.HasSuffix(def, ".odd_sum(integer) (\n    sfunc = int4pl,\n    stype = integer,\n    initcond = '0'\n);") {
 		t.Errorf("aggregate definition = %q, %v", def, err)
 	}
@@ -204,47 +205,30 @@ func TestWalk(t *testing.T) {
 	if len(f) != 1 || f[0].Label != "odd_trigger_function()" || f[0].Detail != "" {
 		t.Fatalf("trigger functions = %+v", f)
 	}
-	if def, err := c.Definition(context.Background(), f[0].Def, f[0].ID); err != nil || !strings.Contains(def, "RETURNS trigger") {
+	if def, err := c.Definition(context.Background(), f[0].Def, f[0].ID, nil); err != nil || !strings.Contains(def, "RETURNS trigger") {
 		t.Errorf("trigger function definition = %q, %v", def, err)
 	}
 
-	// Each definition must be SQL that Postgres accepts. Run them in a rolled
-	// back transaction, under a new schema name so nothing clashes.
+	// A relation's definition is pg_dump's, given a pattern that matches it
+	// alone. It's checked against real backups by hand, as pg_dump can't see
+	// these temp objects.
 	ctx := context.Background()
-	def, err := c.Definition(ctx, table.Def, table.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"id integer not null", "default 'x'", "generated always as ((id * 2)) stored", "PRIMARY KEY (id)", "CREATE INDEX", "CREATE TRIGGER odd_trigger", "CREATE RULE odd_rule"} {
-		if !strings.Contains(def, want) {
-			t.Errorf("definition lacks %q:\n%s", want, def)
-		}
-	}
-	rerun := strings.NewReplacer(schema+".", "defcheck.", `"Odd ""name_pkey"`, "defcheck_pkey",
-		`"Odd ""name_label_idx" ON pg_temp.`, "defcheck_idx ON defcheck.",
-		`ON pg_temp."Odd ""name"`, `ON defcheck."Odd ""name"`, `TO "Odd ""name"`, `TO defcheck."Odd ""name"`).Replace(def)
-	if _, err := c.conn.Exec(ctx, "begin; create schema defcheck; "+rerun).ReadAll(); err != nil {
-		t.Errorf("table definition does not run: %v\n%s", err, rerun)
-	}
-	if _, err := c.conn.Exec(ctx, "rollback").ReadAll(); err != nil {
-		t.Fatal(err)
-	}
-
+	quoted := `"` + schema + `".`
 	view := children(t, c, "views", schema)[0]
 	if r := children(t, c, "rules", view.ID); len(r) != 1 || r[0].Label != "odd_view_rule" {
 		t.Errorf("view rules = %+v, want odd_view_rule without _RETURN", r)
 	}
-	if def, err := c.Definition(ctx, view.Def, view.ID); err != nil || !strings.Contains(def, "create or replace view") {
-		t.Errorf("view definition = %q, %v", def, err)
-	}
 	seq := children(t, c, "sequences", schema)[0]
-	if def, err := c.Definition(ctx, seq.Def, seq.ID); err != nil || !strings.Contains(def, "create sequence") {
-		t.Errorf("sequence definition = %q, %v", def, err)
+	for n, want := range map[Node]string{table: quoted + `"Odd ""name"`, view: quoted + `"odd_view"`, seq: quoted + `"odd_seq"`} {
+		def, err := c.Definition(ctx, n.Def, n.ID, func(_ context.Context, pattern string) (string, error) { return "dumped " + pattern, nil })
+		if err != nil || def != "dumped "+want {
+			t.Errorf("%s definition = %q, %v, want dumped %s", n.Label, def, err, want)
+		}
 	}
-	if _, err := c.Definition(ctx, "nope", "1"); err == nil {
+	if _, err := c.Definition(ctx, "nope", "1", nil); err == nil {
 		t.Error("unknown definition: want an error")
 	}
-	if _, err := c.Definition(ctx, "view", "0"); err == nil {
+	if _, err := c.Definition(ctx, "view", "0", nil); err == nil {
 		t.Error("missing object: want an error")
 	}
 }
@@ -298,7 +282,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 	var script strings.Builder
 	script.WriteString("begin; create schema defcheck; ")
 	for _, n := range nodes {
-		def, err := c.Definition(ctx, n.Def, n.ID)
+		def, err := c.Definition(ctx, n.Def, n.ID, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", n.Label, err)
 		}
@@ -312,13 +296,13 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	def, err := c.Definition(ctx, domains[0].Def, domains[0].ID)
+	def, err := c.Definition(ctx, domains[0].Def, domains[0].ID, nil)
 	for _, want := range []string{"default 1", "not null", "constraint positive CHECK"} {
 		if err != nil || !strings.Contains(def, want) {
 			t.Errorf("domain definition lacks %q: %q, %v", want, def, err)
 		}
 	}
-	if def, err := c.Definition(ctx, types[0].Def, types[0].ID); err != nil || !strings.Contains(def, `'it''s'`) {
+	if def, err := c.Definition(ctx, types[0].Def, types[0].ID, nil); err != nil || !strings.Contains(def, `'it''s'`) {
 		t.Errorf("enum definition = %q, %v", def, err)
 	}
 
@@ -327,7 +311,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def, err := c.Definition(ctx, "type", string(int4[0].Rows[0][0])); err != nil || !strings.Contains(def, "input = int4in") || !strings.Contains(def, "internallength = 4") {
+	if def, err := c.Definition(ctx, "type", string(int4[0].Rows[0][0]), nil); err != nil || !strings.Contains(def, "input = int4in") || !strings.Contains(def, "internallength = 4") {
 		t.Errorf("base type definition = %q, %v", def, err)
 	}
 }
@@ -347,7 +331,7 @@ func TestICUCollationDefinition(t *testing.T) {
 	if node.Detail != "icu" {
 		t.Errorf("provider = %q", node.Detail)
 	}
-	def, err := c.Definition(ctx, node.Def, node.ID)
+	def, err := c.Definition(ctx, node.Def, node.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +531,7 @@ func TestRoles(t *testing.T) {
 		t.Errorf("search = %+v", got)
 	}
 
-	def, err := c.Definition(context.Background(), "role", member.ID)
+	def, err := c.Definition(context.Background(), "role", member.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

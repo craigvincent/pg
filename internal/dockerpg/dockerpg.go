@@ -221,7 +221,7 @@ const readOnlyOptions = "PGOPTIONS=-c default_transaction_read_only=on"
 // says why if the Mac's psql was too old.
 func Psql(ctx context.Context, s conn.Settings, readOnly bool, image, dir string) (cmd *exec.Cmd, notice string) {
 	server, _ := strconv.Atoi(strings.TrimPrefix(image, "postgres:")) // 0 for latest, which any psql will do for
-	path, major := hostPsql(ctx)
+	path, major := hostTool(ctx, "psql")
 	if path != "" && major >= server {
 		cmd = exec.CommandContext(ctx, path)
 		cmd.Dir = dir
@@ -244,22 +244,22 @@ func Psql(ctx context.Context, s conn.Settings, readOnly bool, image, dir string
 		"-v", dir+":/queries:ro", "-w", "/queries", image, "psql")...), notice
 }
 
-// psqlDirs are where psql lands on a Mac but an app opened from the Finder
+// psqlDirs are where psql and pg_dump land on a Mac but an app opened from the Finder
 // won't look: Homebrew's libpq, which it doesn't link, its bin, and
 // Postgres.app. A variable for the tests.
 var psqlDirs = "/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/opt/libpq/bin:/usr/local/bin:/Applications/Postgres.app/Contents/Versions/latest/bin"
 
 var psqlVersion = regexp.MustCompile(`\(PostgreSQL\) (\d+)`)
 
-// hostPsql finds the newest psql on the Mac and its major version, or "" if
-// there's none.
-func hostPsql(ctx context.Context) (path string, major int) {
+// hostTool finds the newest of a Postgres tool, such as psql, on the Mac and
+// its major version, or "" if there's none.
+func hostTool(ctx context.Context, name string) (path string, major int) {
 	var found []string
-	if p, err := exec.LookPath("psql"); err == nil {
+	if p, err := exec.LookPath(name); err == nil {
 		found = append(found, p)
 	}
 	for dir := range strings.SplitSeq(psqlDirs, ":") {
-		if p := filepath.Join(dir, "psql"); dir != "" && !slices.Contains(found, p) {
+		if p := filepath.Join(dir, name); dir != "" && !slices.Contains(found, p) {
 			if _, err := os.Stat(p); err == nil {
 				found = append(found, p)
 			}
@@ -274,6 +274,44 @@ func hostPsql(ctx context.Context) (path string, major int) {
 		}
 	}
 	return path, major
+}
+
+// Dump returns pg_dump's DDL for the relations on s matching pattern, less
+// the session settings and comments it opens each object with, as those would
+// change the settings of a query tab that ran it. It's the Mac's own pg_dump
+// if that's at least as new as the server, which image is named for, or else
+// the image's.
+func Dump(ctx context.Context, s conn.Settings, image, pattern string) (string, error) {
+	server, _ := strconv.Atoi(strings.TrimPrefix(image, "postgres:"))
+	args := []string{"--schema-only", "--table=" + pattern}
+	var cmd *exec.Cmd
+	if path, major := hostTool(ctx, "pg_dump"); path != "" && major >= server {
+		cmd = exec.CommandContext(ctx, path, args...)
+		cmd.Env = append(hostEnv(), pgVars(s, s.Host)...)
+	} else {
+		env, pass := pgEnv(s)
+		cmd = command(ctx, env, append(append(append([]string{"run", "--rm", "--init"}, pass...), image, "pg_dump"), args...)...)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("pg_dump: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var b strings.Builder
+	for line := range strings.Lines(string(out)) {
+		if strings.HasPrefix(line, "--") || strings.HasPrefix(line, "SET ") ||
+			strings.HasPrefix(line, "SELECT pg_catalog.set_config(") || strings.HasPrefix(line, `\`) ||
+			line == "\n" && strings.HasSuffix(b.String(), "\n\n") {
+			continue
+		}
+		b.WriteString(line)
+	}
+	ddl := strings.TrimSpace(b.String())
+	if ddl == "" {
+		return "", errors.New("pg_dump has nothing for it on its own: an identity column's sequence comes with its table")
+	}
+	return ddl, nil
 }
 
 // hostEnv is pg's own environment for the Mac's psql, less any libpq
