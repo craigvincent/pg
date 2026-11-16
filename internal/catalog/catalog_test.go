@@ -49,16 +49,33 @@ func labels(nodes []Node) []string {
 func TestRootHidesSystemSchemas(t *testing.T) {
 	c := newTestCatalog(t)
 	root := children(t, c, RootKind, "")
-	if last := root[len(root)-1]; last.Label != "Roles" || last.Kind != "roles" {
-		t.Errorf("last node = %+v, want Roles", last)
+	if got := labels(root[len(root)-2:]); !slices.Equal(got, []string{"Extensions", "Roles"}) {
+		t.Errorf("last nodes = %v, want Extensions, Roles", got)
 	}
-	for _, n := range root[:len(root)-1] {
+	for _, n := range root[:len(root)-2] {
 		if strings.HasPrefix(n.Label, "pg_") || n.Label == "information_schema" {
 			t.Errorf("system schema %q listed", n.Label)
 		}
 		if n.Kind != "schema" || n.ID != n.Label {
 			t.Errorf("schema node = %+v", n)
 		}
+	}
+}
+
+func TestExtensions(t *testing.T) {
+	c := newTestCatalog(t)
+	exts := children(t, c, "extensions", "")
+	i := slices.IndexFunc(exts, func(n Node) bool { return n.Label == "plpgsql" })
+	if i < 0 {
+		t.Fatalf("extensions = %v, want plpgsql", labels(exts))
+	}
+	p := exts[i]
+	if !strings.Contains(p.Detail, " in pg_catalog") || p.Comment == "" || p.Def != "extension" {
+		t.Errorf("plpgsql = %+v", p)
+	}
+	def, err := c.Definition(context.Background(), p.Def, p.ID)
+	if err != nil || !strings.HasPrefix(def, "create extension plpgsql with schema pg_catalog version ") {
+		t.Errorf("definition = %q, %v", def, err)
 	}
 }
 
@@ -80,6 +97,9 @@ func TestWalk(t *testing.T) {
 		create function pg_temp.odd_function() returns int language sql as 'select 1';
 		create function pg_temp.odd_trigger_function() returns trigger language plpgsql as 'begin return new; end';
 		create temp sequence odd_seq;
+		comment on table "Odd ""name" is 'odd table';
+		comment on column "Odd ""name".label is 'odd label';
+		comment on function pg_temp.odd_function() is 'odd function';
 		select pg_my_temp_schema()::regnamespace::text`
 	res, err := c.conn.Exec(context.Background(), setup).ReadAll()
 	if err != nil {
@@ -112,6 +132,9 @@ func TestWalk(t *testing.T) {
 	if got := children(t, c, "partitions", parted.ID); len(got) != 1 || got[0].Label != "parted_low" || got[0].Kind != "table" {
 		t.Errorf("partitions = %+v", got)
 	}
+	if table.Comment != "odd table" || parted.Comment != "" {
+		t.Errorf("table comments = %q, %q", table.Comment, parted.Comment)
+	}
 	if want := `"Odd ""name" limit 100;`; !strings.HasSuffix(table.SQL, want) {
 		t.Errorf("SQL = %q, want suffix %q", table.SQL, want)
 	}
@@ -133,6 +156,9 @@ func TestWalk(t *testing.T) {
 	}
 	if cols[0].Detail != "integer not null" || cols[1].Detail != "character varying(10)" {
 		t.Errorf("column details = %q, %q", cols[0].Detail, cols[1].Detail)
+	}
+	if cols[0].Comment != "" || cols[1].Comment != "odd label" {
+		t.Errorf("column comments = %q, %q", cols[0].Comment, cols[1].Comment)
 	}
 	if idx := children(t, c, "indexes", table.ID); len(idx) != 2 {
 		t.Errorf("indexes = %+v", idx)
@@ -162,7 +188,7 @@ func TestWalk(t *testing.T) {
 	if s := children(t, c, "sequences", schema); len(s) != 1 || s[0].Kind != "" || s[0].SQL == "" {
 		t.Errorf("sequences = %+v", s)
 	}
-	if f := children(t, c, "functions", schema); len(f) != 1 || f[0].Label != "odd_function()" || f[0].Detail != "integer" {
+	if f := children(t, c, "functions", schema); len(f) != 1 || f[0].Label != "odd_function()" || f[0].Detail != "integer" || f[0].Comment != "odd function" {
 		t.Errorf("functions = %+v", f)
 	}
 	f := children(t, c, "triggerfunctions", schema)

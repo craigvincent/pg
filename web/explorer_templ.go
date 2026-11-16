@@ -194,9 +194,9 @@ func treeLabel(n catalog.Node) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var8 string
-			templ_7745c5c3_Var8, templ_7745c5c3_Err = templruntime.NewAttributeExpression(n.Label).Resolve(ctx)
+			templ_7745c5c3_Var8, templ_7745c5c3_Err = templruntime.NewAttributeExpression(labelTitle(n)).Resolve(ctx)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 43, Col: 96}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 43, Col: 102}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 			if templ_7745c5c3_Err != nil {
@@ -209,7 +209,7 @@ func treeLabel(n catalog.Node) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templruntime.NewAttributeExpression(n.SQL).Resolve(ctx)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 43, Col: 115}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 43, Col: 121}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 			if templ_7745c5c3_Err != nil {
@@ -222,7 +222,7 @@ func treeLabel(n catalog.Node) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(n.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 43, Col: 157}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 43, Col: 163}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -238,9 +238,9 @@ func treeLabel(n catalog.Node) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var11 string
-			templ_7745c5c3_Var11, templ_7745c5c3_Err = templruntime.NewAttributeExpression(n.Label).Resolve(ctx)
+			templ_7745c5c3_Var11, templ_7745c5c3_Err = templruntime.NewAttributeExpression(labelTitle(n)).Resolve(ctx)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 45, Col: 108}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 45, Col: 114}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var11)
 			if templ_7745c5c3_Err != nil {
@@ -253,7 +253,7 @@ func treeLabel(n catalog.Node) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templruntime.NewAttributeExpression(definitionURL(n)).ResolveURL(ctx)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 45, Col: 138}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 45, Col: 144}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var12)
 			if templ_7745c5c3_Err != nil {
@@ -266,7 +266,7 @@ func treeLabel(n catalog.Node) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(n.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 45, Col: 187}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 45, Col: 193}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -282,9 +282,9 @@ func treeLabel(n catalog.Node) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var14 string
-			templ_7745c5c3_Var14, templ_7745c5c3_Err = templruntime.NewAttributeExpression(n.Label).Resolve(ctx)
+			templ_7745c5c3_Var14, templ_7745c5c3_Err = templruntime.NewAttributeExpression(labelTitle(n)).Resolve(ctx)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 47, Col: 61}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 47, Col: 67}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var14)
 			if templ_7745c5c3_Err != nil {
@@ -297,7 +297,7 @@ func treeLabel(n catalog.Node) templ.Component {
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(n.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 47, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/explorer.templ`, Line: 47, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -380,6 +380,14 @@ func treeLabel(n catalog.Node) templ.Component {
 	})
 }
 
+// labelTitle is a node's tooltip: its name, then any comment on it.
+func labelTitle(n catalog.Node) string {
+	if n.Comment == "" {
+		return n.Label
+	}
+	return n.Label + "\n\n" + n.Comment
+}
+
 // nodeIcon is the Lucide icon for a tree node: by what it opens to, or for a
 // leaf, by what its definition is. Columns and the like have none.
 func nodeIcon(n catalog.Node) string {
@@ -418,6 +426,8 @@ func nodeIcon(n catalog.Node) string {
 			return "shapes"
 		case "collation":
 			return "languages"
+		case "extension":
+			return "puzzle"
 		case "role":
 			return "user"
 		}

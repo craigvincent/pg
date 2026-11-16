@@ -37,6 +37,9 @@ type Node struct {
 	Kind   string // the kind to pass to Children to expand it; empty for a leaf
 	ID     string // the id to pass to Children and Definition
 	Def    string // the def to pass to Definition; empty if it has none
+	// Comment is the object's COMMENT ON text, for the queries that give one
+	// as a seventh column.
+	Comment string
 }
 
 // groups are the fixed folders under a relation. Their children use the same
@@ -116,7 +119,8 @@ const (
 // for how each expands, and def is its definition.
 func relations(filter, kind, def string) string {
 	return `
-		select c.relname, ` + rowEstimate + `, ` + selectFrom + `, ` + kind + `, c.oid::text, '` + def + `'
+		select c.relname, ` + rowEstimate + `, ` + selectFrom + `, ` + kind + `, c.oid::text, '` + def + `',
+			obj_description(c.oid, 'pg_class')
 		from pg_class c
 		join pg_namespace n on n.oid = c.relnamespace
 		where n.nspname = $1 and ` + filter + `
@@ -128,7 +132,7 @@ func relations(filter, kind, def string) string {
 func functions(filter, detail string) string {
 	return `
 		select p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
-			` + detail + `, '', '', p.oid::text, 'function'
+			` + detail + `, '', '', p.oid::text, 'function', obj_description(p.oid, 'pg_proc')
 		from pg_proc p
 		join pg_namespace n on n.oid = p.pronamespace
 		where n.nspname = $1 and ` + ownFunction + ` and ` + filter + `
@@ -141,22 +145,37 @@ func functions(filter, detail string) string {
 var queries = map[string]string{
 	// Roles belong to the server, so they sit beside the schemas, not in one.
 	RootKind: `
-		select label, detail, '', kind, id, ''
+		select label, detail, '', kind, id, '', comment
 		from (
-			select n.nspname::text label, '' detail, 'schema' kind, n.nspname::text id, 1 ord
+			select n.nspname::text label, '' detail, 'schema' kind, n.nspname::text id, 1 ord,
+				obj_description(n.oid, 'pg_namespace') comment
 			from pg_namespace n
 			where ` + userSchema + `
 			union all
-			select 'Roles', count(*)::text, 'roles', '', 2
+			select 'Extensions', count(*)::text, 'extensions', '', 2, null
+			from pg_extension
+			union all
+			select 'Roles', count(*)::text, 'roles', '', 3, null
 			from pg_roles r
 			where ` + ownRole + `
 		) found
 		order by ord, label collate "C"`,
 	"roles": `
 		select r.rolname, concat_ws(', ', case when r.rolsuper then 'superuser' end, case when r.rolcanlogin then 'login' end),
-			'', 'role', r.oid::text, 'role'
+			'', 'role', r.oid::text, 'role', shobj_description(r.oid, 'pg_authid')
 		from pg_roles r
 		where ` + ownRole + `
+		order by 1`,
+	// An update is one Postgres has the files for, which alter extension
+	// ... update would move to.
+	"extensions": `
+		select e.extname,
+			e.extversion || coalesce(' in ' || n.nspname, '')
+				|| case when a.default_version <> e.extversion then ', ' || a.default_version || ' available' else '' end,
+			'', '', e.oid::text, 'extension', obj_description(e.oid, 'pg_extension')
+		from pg_extension e
+		left join pg_namespace n on n.oid = e.extnamespace
+		left join pg_available_extensions a on a.name = e.extname
 		order by 1`,
 	// grouped as Postgres 16 can record a membership once per grantor.
 	"memberof": `
@@ -228,7 +247,8 @@ var queries = map[string]string{
 	"matviews":  relations(`c.relkind = 'm'`, `'matview'`, "matview"),
 	"sequences": relations(`c.relkind = 'S'`, `''`, "sequence"),
 	"partitions": `
-		select c.relname, ` + rowEstimate + `, ` + selectFrom + `, ` + tableKind + `, c.oid::text, 'table'
+		select c.relname, ` + rowEstimate + `, ` + selectFrom + `, ` + tableKind + `, c.oid::text, 'table',
+			obj_description(c.oid, 'pg_class')
 		from pg_inherits i
 		join pg_class c on c.oid = i.inhrelid
 		join pg_namespace n on n.oid = c.relnamespace
@@ -237,19 +257,22 @@ var queries = map[string]string{
 	"functions":        functions(`not `+triggerFunction, `pg_get_function_result(p.oid)`),
 	"triggerfunctions": functions(triggerFunction, `''`),
 	"collations": `
-		select l.collname, ` + collationProvider + `, '', '', l.oid::text, 'collation'
+		select l.collname, ` + collationProvider + `, '', '', l.oid::text, 'collation',
+			obj_description(l.oid, 'pg_collation')
 		from pg_collation l
 		join pg_namespace n on n.oid = l.collnamespace
 		where n.nspname = $1 and ` + ownCollation + `
 		order by 1`,
 	"domains": `
-		select t.typname, format_type(t.typbasetype, t.typtypmod), '', '', t.oid::text, 'domain'
+		select t.typname, format_type(t.typbasetype, t.typtypmod), '', '', t.oid::text, 'domain',
+			obj_description(t.oid, 'pg_type')
 		from pg_type t
 		join pg_namespace n on n.oid = t.typnamespace
 		where n.nspname = $1 and ` + ownDomain + `
 		order by 1`,
 	"types": `
-		select t.typname, ` + typeKind + `, '', '', t.oid::text, 'type'
+		select t.typname, ` + typeKind + `, '', '', t.oid::text, 'type',
+			obj_description(t.oid, 'pg_type')
 		from pg_type t
 		join pg_namespace n on n.oid = t.typnamespace
 		where n.nspname = $1 and ` + ownType + `
@@ -257,7 +280,7 @@ var queries = map[string]string{
 	"columns": `
 		select attname,
 			format_type(atttypid, atttypmod) || case when attnotnull then ' not null' else '' end,
-			'', '', '', ''
+			'', '', '', '', col_description(attrelid, attnum)
 		from pg_attribute
 		where attrelid = $1 and attnum > 0 and not attisdropped
 		order by attnum`,
@@ -366,6 +389,11 @@ var definitions = map[string]string{
 		from pg_class c
 		join pg_namespace n on n.oid = c.relnamespace
 		where c.oid = $1`,
+	"extension": `
+		select format('create extension %I with schema %I version %L;', e.extname, n.nspname, e.extversion)
+		from pg_extension e
+		join pg_namespace n on n.oid = e.extnamespace
+		where e.oid = $1`,
 	"sequence": `
 		select format('create sequence %I.%I as %s increment %s minvalue %s maxvalue %s start %s cache %s%s;',
 			n.nspname, c.relname, format_type(s.seqtypid, null), s.seqincrement, s.seqmin, s.seqmax,
@@ -511,6 +539,9 @@ func (c *Catalog) Children(ctx context.Context, kind, id string) ([]Node, error)
 			Kind:   string(r[3]),
 			ID:     string(r[4]),
 			Def:    string(r[5]),
+		}
+		if len(r) > 6 {
+			nodes[i].Comment = string(r[6])
 		}
 	}
 	return nodes, nil

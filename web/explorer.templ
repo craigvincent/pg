@@ -40,11 +40,11 @@ templ treeLabel(n catalog.Node) {
 			<i data-lucide={ icon } class={ "size-3.5 shrink-0 self-center", nodeIconColour(icon) } aria-hidden="true"></i>
 		}
 		if n.SQL != "" {
-			<button type="button" class="cursor-pointer min-w-0 truncate hover:underline" title={ n.Label } data-sql={ n.SQL } onclick="useSQL(event, this)">{ n.Label }</button>
+			<button type="button" class="cursor-pointer min-w-0 truncate hover:underline" title={ labelTitle(n) } data-sql={ n.SQL } onclick="useSQL(event, this)">{ n.Label }</button>
 		} else if n.Def != "" {
-			<button type="button" class="cursor-pointer shrink-0 max-w-full truncate hover:underline" title={ n.Label } data-url={ definitionURL(n) } onclick="useDefinition(event, this)">{ n.Label }</button>
+			<button type="button" class="cursor-pointer shrink-0 max-w-full truncate hover:underline" title={ labelTitle(n) } data-url={ definitionURL(n) } onclick="useDefinition(event, this)">{ n.Label }</button>
 		} else {
-			<span class="shrink-0 max-w-full truncate" title={ n.Label }>{ n.Label }</span>
+			<span class="shrink-0 max-w-full truncate" title={ labelTitle(n) }>{ n.Label }</span>
 		}
 		if n.Detail != "" {
 			<span class="truncate shrink-1000 text-base-content/50" title={ n.Detail }>{ n.Detail }</span>
@@ -53,6 +53,14 @@ templ treeLabel(n catalog.Node) {
 			<button type="button" class="cursor-pointer shrink-0 ml-auto text-base-content/60 opacity-0 hover:underline group-hover:opacity-100 focus:opacity-100" aria-label={ "Show the definition of " + n.Label } data-url={ definitionURL(n) } onclick="useDefinition(event, this)">DDL</button>
 		}
 	</span>
+}
+
+// labelTitle is a node's tooltip: its name, then any comment on it.
+func labelTitle(n catalog.Node) string {
+	if n.Comment == "" {
+		return n.Label
+	}
+	return n.Label + "\n\n" + n.Comment
 }
 
 // nodeIcon is the Lucide icon for a tree node: by what it opens to, or for a
@@ -93,6 +101,8 @@ func nodeIcon(n catalog.Node) string {
 			return "shapes"
 		case "collation":
 			return "languages"
+		case "extension":
+			return "puzzle"
 		case "role":
 			return "user"
 		}
