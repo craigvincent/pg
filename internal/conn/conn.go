@@ -150,6 +150,34 @@ type Settings struct {
 	User     string
 	Password string
 	Database string
+	SSL      []string // libpq's variables for the service's ssl settings, such as PGSSLMODE=verify-full
+}
+
+// SSLVars returns libpq's variables for a service's ssl settings, such as
+// PGSSLMODE=verify-full and PGSSLROOTCERT, so another program connects as
+// securely as pg does. Each is the setting's name, upper case without
+// underscores, after PG.
+func SSLVars(service string) ([]string, error) {
+	path, err := ServiceFilePath()
+	if err != nil {
+		return nil, err
+	}
+	sf, err := pgservicefile.ReadServicefile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	svc, err := sf.GetService(service)
+	if err != nil {
+		return nil, err
+	}
+	var vars []string
+	for name, value := range svc.Settings {
+		if strings.HasPrefix(name, "ssl") {
+			vars = append(vars, "PG"+strings.ToUpper(strings.ReplaceAll(name, "_", ""))+"="+value)
+		}
+	}
+	slices.Sort(vars)
+	return vars, nil
 }
 
 // SettingsFor resolves dsn, including any service and password files. With no

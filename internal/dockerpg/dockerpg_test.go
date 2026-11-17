@@ -1059,6 +1059,23 @@ func TestDumpRoundTrip(t *testing.T) {
 	}
 }
 
+// A service's ssl settings reach the Mac's tools whole, and Docker's as just
+// sslmode, as the certificate files aren't in the container.
+func TestSSLPassedOn(t *testing.T) {
+	settings := conn.Settings{Host: "db.example.com", Port: 5432, User: "me", Database: "app",
+		SSL: []string{"PGSSLMODE=verify-full", "PGSSLROOTCERT=/Users/me/root.crt"}}
+	fakePsql(t, 18)
+	if cmd, _ := Psql(t.Context(), settings, false, "postgres:18", "/tmp"); !slices.Contains(cmd.Env, "PGSSLMODE=verify-full") || !slices.Contains(cmd.Env, "PGSSLROOTCERT=/Users/me/root.crt") {
+		t.Errorf("host env = %v", cmd.Env)
+	}
+	fakePsql(t, 0)
+	cmd, _ := Psql(t.Context(), settings, false, "postgres:18", "/tmp")
+	if !slices.Contains(cmd.Env, "PGSSLMODE=verify-full") || !strings.Contains(strings.Join(cmd.Args, " "), "-e PGSSLMODE") ||
+		slices.ContainsFunc(cmd.Env, func(v string) bool { return strings.HasPrefix(v, "PGSSLROOTCERT=") }) {
+		t.Errorf("docker = %v, env %v", cmd.Args, cmd.Env)
+	}
+}
+
 func TestRunSurvivesALongLine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

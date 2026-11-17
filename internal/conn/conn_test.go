@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -205,5 +206,25 @@ func TestWithDatabaseQuotes(t *testing.T) {
 		if cfg.Host != "h" || cfg.Database != db {
 			t.Errorf("%q: host %q, database %q", db, cfg.Host, cfg.Database)
 		}
+	}
+}
+
+func TestSSLVars(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "services.conf")
+	text := "[secure]\nhost=db.example.com\nsslmode=verify-full\nsslrootcert=/Users/me/root.crt\nssl_min_protocol_version=TLSv1.3\n[plain]\nhost=localhost\n"
+	if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGSERVICEFILE", file)
+	got, err := SSLVars("secure")
+	want := []string{"PGSSLMINPROTOCOLVERSION=TLSv1.3", "PGSSLMODE=verify-full", "PGSSLROOTCERT=/Users/me/root.crt"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("SSLVars(secure) = %v, %v, want %v", got, err, want)
+	}
+	if got, err := SSLVars("plain"); err != nil || got != nil {
+		t.Errorf("SSLVars(plain) = %v, %v", got, err)
+	}
+	if _, err := SSLVars("missing"); err == nil {
+		t.Error("missing service: want an error")
 	}
 }

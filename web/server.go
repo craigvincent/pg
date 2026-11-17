@@ -253,6 +253,9 @@ func (s *Server) connectService(w http.ResponseWriter, r *http.Request) {
 	image := dockerpg.Image(c.ParameterStatus("server_version"))
 	_ = c.Close(ctx)
 	settings, err := conn.SettingsFor(dsn)
+	if err == nil && strings.HasPrefix(dsn, "service=") { // a sandbox's isn't, and needs no ssl
+		settings.SSL, err = conn.SSLVars(base)
+	}
 	if err != nil {
 		s.connectFailed(w, r, services, err)
 		return

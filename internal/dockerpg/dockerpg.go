@@ -153,10 +153,13 @@ func containerHost(host string) string {
 // docker's flags to pass them on. They go through the environment rather than
 // the arguments, so the password stays out of the process list.
 //
-// shortcut: sslmode isn't passed on, so the tools use their default of prefer.
-// Add it if a service ever needs verify-full.
+// shortcut: of the ssl settings only sslmode goes, as certificate files are on
+// the Mac, so verify-ca and verify-full fail in a container rather than check
+// less. Mount the files if a service needing them has to use Docker's tools.
 func pgEnv(s conn.Settings) (env, pass []string) {
-	env = pgVars(s, containerHost(s.Host))
+	env = slices.DeleteFunc(pgVars(s, containerHost(s.Host)), func(v string) bool {
+		return strings.HasPrefix(v, "PGSSL") && !strings.HasPrefix(v, "PGSSLMODE=")
+	})
 	for _, v := range env {
 		name, _, _ := strings.Cut(v, "=")
 		pass = append(pass, "-e", name)
@@ -166,13 +169,13 @@ func pgEnv(s conn.Settings) (env, pass []string) {
 
 // pgVars are libpq's variables for reaching s at host.
 func pgVars(s conn.Settings, host string) []string {
-	return []string{
+	return append([]string{
 		"PGHOST=" + host,
 		"PGPORT=" + strconv.Itoa(int(s.Port)),
 		"PGUSER=" + s.User,
 		"PGPASSWORD=" + s.Password,
 		"PGDATABASE=" + s.Database,
-	}
+	}, s.SSL...)
 }
 
 // Backup dumps a database to dest in pg_dump's custom format, without its rows
