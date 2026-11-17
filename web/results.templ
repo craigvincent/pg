@@ -145,6 +145,9 @@ templ MoreRows(p session.Page, tab string) {
 // closing the tab, which would roll the transaction back.
 templ summary(p session.Page) {
 	<div class="p-2" data-summary data-in-transaction?={ p.InTransaction }>
+		for _, n := range p.Notices {
+			<div class="text-info whitespace-pre-wrap">{ n }</div>
+		}
 		if p.Err != nil {
 			<span class="text-error whitespace-pre-wrap">{ p.Err.Error() }</span>
 		} else {

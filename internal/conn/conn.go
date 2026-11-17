@@ -129,12 +129,37 @@ func Open(ctx context.Context, dsn string) (*pgconn.PgConn, error) {
 	if cfg.RuntimeParams["application_name"] == "" {
 		cfg.RuntimeParams["application_name"] = "pg"
 	}
+	cfg.OnNotice = func(c *pgconn.PgConn, n *pgconn.Notice) {
+		c.CustomData()[noticesKey] = append(TakeNotices(c), noticeText(n))
+	}
 	cfg.BuildContextWatcherHandler = func(c *pgconn.PgConn) ctxwatch.Handler {
 		// If the server hasn't answered the cancel request within DeadlineDelay,
 		// fall back to breaking the connection so the UI never hangs.
 		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: 3 * time.Second}
 	}
 	return pgconn.ConnectConfig(ctx, cfg)
+}
+
+const noticesKey = "notices"
+
+// TakeNotices returns the notices c has received since last asked, such as
+// RAISE NOTICE's, and forgets them.
+func TakeNotices(c *pgconn.PgConn) []string {
+	notices, _ := c.CustomData()[noticesKey].([]string)
+	delete(c.CustomData(), noticesKey)
+	return notices
+}
+
+// noticeText lays a notice out as psql does.
+func noticeText(n *pgconn.Notice) string {
+	text := n.Severity + ":  " + n.Message
+	if n.Detail != "" {
+		text += "\nDETAIL:  " + n.Detail
+	}
+	if n.Hint != "" {
+		text += "\nHINT:  " + n.Hint
+	}
+	return text
 }
 
 // Alive reports whether c still works. Asking the server is the only way to

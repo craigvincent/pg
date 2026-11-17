@@ -656,3 +656,15 @@ func TestSearchPathFollowsARollback(t *testing.T) {
 		t.Fatalf("after rollback = %q, %v", s.SearchPath(), p.Err)
 	}
 }
+
+func TestNoticesComeWithTheirResult(t *testing.T) {
+	s := newTestSession(t)
+
+	p := s.Run(`do $$ begin raise notice 'one'; end $$; select 1 as a; do $$ begin raise notice 'two' using hint = 'h'; end $$`)
+	if !p.Done || strings.Join(p.Notices, "|") != "NOTICE:  one|NOTICE:  two\nHINT:  h" {
+		t.Fatalf("notices = %q", p.Notices)
+	}
+	if p = s.Run("select 1"); len(p.Notices) != 0 {
+		t.Errorf("a later query got %q", p.Notices)
+	}
+}

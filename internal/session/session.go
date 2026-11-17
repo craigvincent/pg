@@ -107,9 +107,10 @@ type Page struct {
 	// More returns next, with its own Columns.
 	Ended bool
 
-	// Set once the query has finished, and Tags and Elapsed also when Ended.
+	// Set once the query has finished, and Tags, Notices and Elapsed also when Ended.
 	Done    bool
 	Tags    []string // command tags, e.g. "SELECT 12", "UPDATE 3"
+	Notices []string // what the server said along the way, e.g. RAISE NOTICE's
 	Err     error
 	Elapsed time.Duration // time spent running, not waiting for the next page to be asked for
 
@@ -224,7 +225,7 @@ func (s *Session) Explain(sql string, analyze bool) (p Page) {
 	}
 
 	res := s.conn.ExecParams(ctx, stmt, nil, nil, nil, nil).Read()
-	p = Page{QueryID: q.id, Done: true, Err: res.Err, Elapsed: time.Since(q.start)}
+	p = Page{QueryID: q.id, Done: true, Err: res.Err, Elapsed: time.Since(q.start), Notices: conn.TakeNotices(s.conn)}
 	if res.Err != nil {
 		return p
 	}
@@ -286,6 +287,7 @@ func (s *Session) begin() (context.Context, *query, error) {
 		}
 		s.conn = fresh
 	}
+	conn.TakeNotices(s.conn) // any left over belong to an abandoned query
 	// Timed from here, so the check above doesn't count: on a distant server,
 	// it would double the time a quick query seems to take.
 	q.start = time.Now()
@@ -371,6 +373,7 @@ func (s *Session) readPage(q *query) Page {
 			return s.finish(q, p)
 		}
 		p.Ended, p.Tags, p.Elapsed = true, q.tags, q.elapsed+time.Since(q.start)
+		p.Notices = conn.TakeNotices(s.conn)
 		q.tags, q.ncols, q.total, q.elapsed, q.start = nil, 0, 0, 0, time.Now()
 	}
 	q.elapsed += time.Since(q.start)
@@ -430,6 +433,7 @@ func (s *Session) finish(q *query, p Page) Page {
 	}
 	p.Done = true
 	p.Tags = q.tags
+	p.Notices = conn.TakeNotices(s.conn)
 	p.Total = q.total
 	p.NumCols = q.ncols
 	p.Elapsed = q.elapsed + time.Since(q.start)
