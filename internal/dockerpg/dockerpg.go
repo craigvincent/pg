@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	pg_query "github.com/pganalyze/pg_query_go/v6"
+
 	"pg/internal/conn"
 )
 
@@ -277,13 +279,14 @@ func hostTool(ctx context.Context, name string) (path string, major int) {
 }
 
 // Dump returns pg_dump's DDL for the relations on s matching pattern, less
-// the session settings and comments it opens each object with, as those would
-// change the settings of a query tab that ran it. It's the Mac's own pg_dump
-// if that's at least as new as the server, which image is named for, or else
-// the image's.
+// the session settings it starts with, which would change those of a query
+// tab that ran it, and the comments it opens each statement with. It's the
+// Mac's own pg_dump if that's at least as new as the server, which image is
+// named for, or else the image's.
 func Dump(ctx context.Context, s conn.Settings, image, pattern string) (string, error) {
 	server, _ := strconv.Atoi(strings.TrimPrefix(image, "postgres:"))
-	args := []string{"--schema-only", "--table=" + pattern}
+	// pg_dump locks what it dumps, so a migration holding the table would keep it waiting.
+	args := []string{"--schema-only", "--lock-wait-timeout=2s", "--table=" + pattern}
 	var cmd *exec.Cmd
 	if path, major := hostTool(ctx, "pg_dump"); path != "" && major >= server {
 		cmd = exec.CommandContext(ctx, path, args...)
@@ -296,22 +299,59 @@ func Dump(ctx context.Context, s conn.Settings, image, pattern string) (string, 
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("pg_dump: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	var b strings.Builder
-	for line := range strings.Lines(string(out)) {
-		if strings.HasPrefix(line, "--") || strings.HasPrefix(line, "SET ") ||
-			strings.HasPrefix(line, "SELECT pg_catalog.set_config(") || strings.HasPrefix(line, `\`) ||
-			line == "\n" && strings.HasSuffix(b.String(), "\n\n") {
-			continue
+		msg := strings.TrimSpace(stderr.String())
+		switch {
+		case strings.Contains(msg, "permission denied"):
+			return "", fmt.Errorf("pg_dump needs SELECT on it, to lock it while it reads the definition: %s", msg)
+		case strings.Contains(msg, "--lock-wait-timeout") || strings.Contains(msg, "statement timeout"):
+			return "", fmt.Errorf("something else has it locked, so pg_dump couldn't read it: try again once that's done: %s", msg)
 		}
-		b.WriteString(line)
+		return "", fmt.Errorf("pg_dump: %w: %s", err, msg)
 	}
-	ddl := strings.TrimSpace(b.String())
+	ddl, err := statements(string(out))
+	if err != nil {
+		return "", err
+	}
 	if ddl == "" {
-		return "", errors.New("pg_dump has nothing for it on its own: an identity column's sequence comes with its table")
+		return "", errors.New("pg_dump returned nothing for it (an identity column's sequence comes with its table)")
 	}
 	return ddl, nil
+}
+
+// statements is the DDL in pg_dump's output. It's taken apart statement by
+// statement, not line by line, so a string that spans lines comes through whole.
+func statements(dump string) (string, error) {
+	// Newer pg_dumps wrap their output in psql's \restrict and \unrestrict,
+	// which aren't SQL, as the first line that isn't a comment and the last.
+	lines := strings.Split(strings.TrimSpace(dump), "\n")
+	if n := len(lines); strings.HasPrefix(lines[n-1], `\unrestrict `) {
+		lines = lines[:n-1]
+	}
+	for i, line := range lines {
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		if strings.HasPrefix(line, `\restrict `) {
+			lines = slices.Delete(lines, i, i+1)
+		}
+		break
+	}
+	stmts, err := pg_query.SplitWithScanner(strings.Join(lines, "\n"), true)
+	if err != nil {
+		return "", fmt.Errorf("can't read pg_dump's output: %w", err)
+	}
+	var kept []string
+	for _, stmt := range stmts {
+		// A statement's own text starts at its first line that isn't a comment.
+		for stmt != "" && strings.HasPrefix(stmt, "--") {
+			_, stmt, _ = strings.Cut(stmt, "\n")
+			stmt = strings.TrimLeft(stmt, "\n")
+		}
+		if stmt != "" && !strings.HasPrefix(stmt, "SET ") && !strings.HasPrefix(stmt, "SELECT pg_catalog.set_config(") {
+			kept = append(kept, stmt+";")
+		}
+	}
+	return strings.Join(kept, "\n\n"), nil
 }
 
 // hostEnv is pg's own environment for the Mac's psql, less any libpq

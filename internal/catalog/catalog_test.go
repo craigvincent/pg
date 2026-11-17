@@ -245,6 +245,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 		create domain pg_temp.odd_domain as int default 1 not null constraint positive check (value > 0);
 		alter domain pg_temp.odd_domain add constraint small check (value < 100) not valid;
 		create collation pg_temp.odd_collation (provider = libc, locale = 'C');
+		create collation pg_temp.odd_mixed (provider = libc, lc_collate = 'C', lc_ctype = 'C.utf8');
 		select pg_my_temp_schema()::regnamespace::text`
 	res, err := c.conn.Exec(ctx, setup).ReadAll()
 	if err != nil {
@@ -257,7 +258,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 	for _, g := range groups {
 		details[g.Label] = g.Detail
 	}
-	if details["Collations"] != "1" || details["Domains"] != "1" || details["Types"] != "3" {
+	if details["Collations"] != "2" || details["Domains"] != "1" || details["Types"] != "3" {
 		t.Errorf("group counts = %v", details)
 	}
 
@@ -274,7 +275,7 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 		t.Fatalf("domains = %+v", domains)
 	}
 	collations := children(t, c, "collations", schema)
-	if len(collations) != 1 || collations[0].Detail != "libc" {
+	if len(collations) != 2 || collations[0].Detail != "libc" || collations[1].Label != "odd_mixed" {
 		t.Fatalf("collations = %+v", collations)
 	}
 
@@ -314,6 +315,28 @@ func TestCollationsDomainsAndTypes(t *testing.T) {
 	}
 	if def, err := c.Definition(ctx, "type", string(int4[0].Rows[0][0]), nil); err != nil || !strings.Contains(def, "input = int4in") || !strings.Contains(def, "internallength = 4") {
 		t.Errorf("base type definition = %q, %v", def, err)
+	}
+	if def, err := c.Definition(ctx, collations[1].Def, collations[1].ID, nil); err != nil || !strings.Contains(def, "lc_collate = 'C', lc_ctype = 'C.utf8'") {
+		t.Errorf("mixed collation definition = %q, %v", def, err)
+	}
+
+	// Names come with their schemas, whatever the search path, which the
+	// definition leaves as it found it. Reading it ends this transaction.
+	res, err = c.conn.Exec(ctx, `begin;
+		create schema odd_path;
+		create type odd_path.mood as enum ('ok');
+		create domain odd_path.feeling as odd_path.mood;
+		set local search_path = odd_path;
+		select 'odd_path.feeling'::regtype::oid`).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err = c.Definition(ctx, "domain", string(res[len(res)-1].Rows[0][0]), nil)
+	if err != nil || !strings.Contains(def, "as odd_path.mood;") {
+		t.Errorf("domain definition = %q, %v, want its type's schema", def, err)
+	}
+	if res, err := c.conn.Exec(ctx, "show search_path").ReadAll(); err != nil || string(res[0].Rows[0][0]) != `"$user", public` {
+		t.Errorf("search_path after = %v, %v", res, err)
 	}
 }
 

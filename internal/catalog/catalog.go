@@ -104,7 +104,7 @@ const (
 	ownCollation = `not exists (select 1 from pg_depend d
 		where d.classid = 'pg_collation'::regclass and d.objid = l.oid and d.deptype = 'e')`
 	typeKind          = `case t.typtype when 'e' then 'enum' when 'c' then 'composite' when 'r' then 'range' else 'base' end`
-	collationProvider = `case l.collprovider when 'i' then 'icu' when 'c' then 'libc' else 'default' end`
+	collationProvider = `case l.collprovider when 'i' then 'icu' when 'c' then 'libc' when 'b' then 'builtin' else 'default' end`
 	// selectFrom is a query for the rows of relation c in schema n. Postgres
 	// does the identifier quoting, via format's %I.
 	selectFrom = `format('select * from %I.%I limit 100;', n.nspname, c.relname)`
@@ -413,9 +413,12 @@ var definitions = map[string]string{
 		where e.oid = $1`,
 	// The ICU locale's column has been renamed between versions, hence to_jsonb.
 	"collation": `
-		select format('create collation %I.%I (provider = %s, locale = %L%s);', n.nspname, l.collname,
+		select format('create collation %I.%I (provider = %s, %s%s);', n.nspname, l.collname,
 			` + collationProvider + `,
-			coalesce(to_jsonb(l) ->> 'colllocale', to_jsonb(l) ->> 'colliculocale', l.collcollate),
+			case when l.collprovider = 'c' and l.collcollate <> l.collctype
+				then format('lc_collate = %L, lc_ctype = %L', l.collcollate, l.collctype)
+				else format('locale = %L', coalesce(to_jsonb(l) ->> 'colllocale', to_jsonb(l) ->> 'colliculocale', l.collcollate))
+			end,
 			case when l.collisdeterministic then '' else ', deterministic = false' end)
 		from pg_collation l
 		join pg_namespace n on n.oid = l.collnamespace
@@ -557,7 +560,7 @@ func (c *Catalog) Definition(ctx context.Context, def, id string, dump func(ctx 
 	if !ok {
 		return "", fmt.Errorf("unknown definition %q", def)
 	}
-	rows, err := c.read(ctx, sql, [][]byte{[]byte(id)})
+	rows, err := c.readQualified(ctx, sql, [][]byte{[]byte(id)})
 	if err != nil {
 		return "", err
 	}
@@ -660,24 +663,50 @@ func (c *Catalog) read(ctx context.Context, sql string, params [][]byte) ([][][]
 func (c *Catalog) query(ctx context.Context, sql string, params [][]byte) (*pgconn.Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.open(ctx); err != nil {
+		return nil, err
+	}
+	res := c.conn.ExecParams(ctx, sql, params, nil, nil, nil).Read()
+	return res, res.Err
+}
+
+// readQualified is read with search_path empty, as pg_dump has it, so the
+// names Postgres prints come with their schemas unless they're pg_catalog's,
+// and the SQL means the same whatever path it's run on. Only for this query,
+// as Completions works from the connection's own.
+func (c *Catalog) readQualified(ctx context.Context, sql string, params [][]byte) ([][][]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.open(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { _, _ = c.conn.Exec(context.WithoutCancel(ctx), "rollback").ReadAll() }()
+	if _, err := c.conn.Exec(ctx, "begin read only; set local search_path = ''").ReadAll(); err != nil {
+		return nil, err
+	}
+	res := c.conn.ExecParams(ctx, sql, params, nil, nil, nil).Read()
+	return res.Rows, res.Err
+}
+
+// open connects, unless the connection's still alive. c.mu must be held.
+func (c *Catalog) open(ctx context.Context) error {
 	if c.closed {
-		return nil, ErrClosed
+		return ErrClosed
 	}
 	if c.conn == nil || !conn.Alive(ctx, c.conn) {
 		fresh, err := c.connect(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		// Health's sizes wait on a locked table, holding up Activity and the
 		// tree, which are what's needed to find the lock.
 		if _, err := fresh.Exec(ctx, "set lock_timeout = '2s'").ReadAll(); err != nil {
 			_ = fresh.Close(ctx)
-			return nil, err
+			return err
 		}
 		c.conn = fresh
 	}
-	res := c.conn.ExecParams(ctx, sql, params, nil, nil, nil).Read()
-	return res, res.Err
+	return nil
 }
 
 // Close closes the connection, if one was opened.

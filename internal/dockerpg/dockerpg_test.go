@@ -936,7 +936,7 @@ func TestDump(t *testing.T) {
 	script := `#!/bin/sh
 [ "$1" = --version ] && { echo 'pg_dump (PostgreSQL) 18.1'; exit; }
 echo "$* $PGHOST $PGPASSWORD $PGSERVICE" > "${0%/*}/ran"
-[ "$2" = --table=none ] && { printf -- '--\n-- PostgreSQL database dump\n--\n\nSET statement_timeout = 0;\n'; exit; }
+[ "$3" = --table=none ] && { printf -- '--\n-- PostgreSQL database dump\n--\n\nSET statement_timeout = 0;\n'; exit; }
 /bin/cat <<'END'
 --
 -- PostgreSQL database dump
@@ -952,11 +952,27 @@ SELECT pg_catalog.set_config('search_path', '', false);
 --
 
 CREATE TABLE public.t (
-    id integer
+    id integer,
+    status text DEFAULT 'draft
+-- not yet sent
+
+SET by the mailer'::text
 );
 
 
 ALTER TABLE public.t OWNER TO postgres;
+
+--
+-- Name: TABLE t; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.t IS 'Statuses:
+\restrict
+-- draft
+
+
+
+end';
 
 \unrestrict abc
 
@@ -966,15 +982,80 @@ END
 		t.Fatal(err)
 	}
 	ddl, err := Dump(t.Context(), settings, "postgres:18", `"public"."t"`)
-	want := "CREATE TABLE public.t (\n    id integer\n);\n\nALTER TABLE public.t OWNER TO postgres;"
+	// Strings that span lines come through whole, whatever their lines start with.
+	want := "CREATE TABLE public.t (\n    id integer,\n    status text DEFAULT 'draft\n-- not yet sent\n\nSET by the mailer'::text\n);\n\n" +
+		"ALTER TABLE public.t OWNER TO postgres;\n\nCOMMENT ON TABLE public.t IS 'Statuses:\n\\restrict\n-- draft\n\n\n\nend';"
 	if err != nil || ddl != want {
 		t.Errorf("Dump = %q, %v\nwant %q", ddl, err, want)
 	}
-	if ran, _ := os.ReadFile(filepath.Join(dir, "ran")); string(ran) != `--schema-only --table="public"."t" localhost it's `+"\n" {
+	if ran, _ := os.ReadFile(filepath.Join(dir, "ran")); string(ran) != `--schema-only --lock-wait-timeout=2s --table="public"."t" localhost it's `+"\n" {
 		t.Errorf("ran %q", ran)
 	}
 	if _, err := Dump(t.Context(), settings, "postgres:18", "none"); err == nil || !strings.Contains(err.Error(), "identity column") {
 		t.Errorf("nothing dumped: err = %v", err)
+	}
+}
+
+// Each relation's DDL, run in an empty database in turn, makes a schema
+// pg_dump can't tell from the original, awkward strings and all.
+func TestDumpRoundTrip(t *testing.T) {
+	_, image := settings(t)
+	ctx := context.Background()
+	sb, cleanup := emptySandbox(t, image)
+	defer cleanup()
+	src, err := conn.Open(ctx, sb.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close(ctx)
+	if _, err := src.Exec(ctx, `
+		create table "Odd ""name" (
+			id int primary key,
+			status text default E'draft\n-- not yet sent' check (status <> E'x\nSET y'),
+			pattern text check (pattern <> E'a\n\\d+'));
+		alter table "Odd ""name" add constraint few check (id < 100) not valid;
+		alter table "Odd ""name" enable row level security;
+		create policy mine on "Odd ""name" using (id > 0);
+		comment on table "Odd ""name" is E'Statuses:\n-- draft: unsent\nSET to sent by the mailer\n\n\n\nend';
+		create unlogged table counted (id serial);
+		create table parted (id int) partition by range (id);
+		create table parted_low partition of parted for values from (1) to (10);
+		create view big with (security_barrier) as select * from "Odd ""name" where id > 10 with local check option`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Exec(ctx, "create database copy").ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := conn.SettingsFor(sb.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := conn.Open(ctx, strings.Replace(sb.DSN(), "dbname="+sandboxDB, "dbname=copy", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(ctx)
+	for _, name := range []string{`"Odd ""name"`, "counted", "parted", "parted_low", "big"} {
+		ddl, err := Dump(ctx, s, image, `"public".`+name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, err := dst.Exec(ctx, ddl).ReadAll(); err != nil {
+			t.Fatalf("%s's DDL does not run: %v\n%s", name, err, ddl)
+		}
+	}
+	schema := func(db string) string {
+		out, err := output(ctx, nil, "exec", sb.Name, "pg_dump", "-U", "postgres", "--schema-only", db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The restrict key is new each time.
+		return strings.Join(slices.DeleteFunc(strings.Split(out, "\n"), func(l string) bool {
+			return strings.HasPrefix(l, `\restrict `) || strings.HasPrefix(l, `\unrestrict `)
+		}), "\n")
+	}
+	if a, b := schema(sandboxDB), schema("copy"); a != b {
+		t.Errorf("the copy differs:\n%s\n=====\n%s", a, b)
 	}
 }
 
