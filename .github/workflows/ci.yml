@@ -31,7 +31,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go test ./...
+      # Less the window, which Wails would build with GTK here: Linux isn't a
+      # platform pg ships for, and macOS and Windows build it.
+      - run: go test $(go list ./... | grep -v /cmd/pgide)
 
   macos:
     runs-on: macos-latest
