@@ -55,7 +55,7 @@ jobs:
         run: Add-Content $env:GITHUB_PATH "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
       - run: go vet ./...
       - name: Test the Windows-specific packages
-        run: go test ./internal/term/ ./internal/conn/ ./web/ -run 'TestStart|TestCancel|TestStartMissing|TestEnsureFile|TestDefaultPaths|TestExposedPassFile|TestShortcut|TestRelativeName|TestQueryPathOnWindows'
+        run: go test ./internal/term/ ./internal/conn/ ./web/ -run '^(TestStart|TestCancel|TestStartMissing|TestEnsureFile|TestDefaultPaths|TestExposedPassFile|TestShortcut|TestRelativeName|TestQueryPathOnWindows|TestStartersOnlyArriveOnce)$'
       - name: Test everything (informational; many tests drive sh)
         continue-on-error: true
         run: go test ./...
