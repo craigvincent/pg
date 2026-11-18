@@ -17,6 +17,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+var updateProcThreadAttribute = windows.NewLazySystemDLL("kernel32.dll").NewProc("UpdateProcThreadAttribute")
+
 // winTerm is a command on a pseudo console. ConPTY reads what's typed from
 // one pipe and writes the screen, as VT sequences, to another, much as a pty
 // does on Unix.
@@ -80,8 +82,11 @@ func (t *winTerm) start() error {
 		return err
 	}
 	defer attrs.Delete()
-	// The attribute's value is the console handle itself, not a pointer to it.
-	if err := attrs.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, unsafe.Pointer(t.console), unsafe.Sizeof(t.console)); err != nil {
+	// The attribute's value is the console handle itself, not a pointer to it,
+	// which attrs.Update would want, so this calls Windows directly.
+	r, _, err := updateProcThreadAttribute.Call(uintptr(unsafe.Pointer(attrs.List())), 0,
+		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, uintptr(t.console), unsafe.Sizeof(t.console), 0, 0)
+	if r == 0 {
 		return err
 	}
 
