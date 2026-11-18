@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -28,6 +29,12 @@ import (
 	"pg/internal/session"
 	"pg/internal/term"
 )
+
+// private reports whether info's mode is mode, as pg sets for its own files.
+// Windows has no mode bits, as such: it keeps files private with ACLs.
+func private(info os.FileInfo, mode os.FileMode) bool {
+	return runtime.GOOS == "windows" || info.Mode().Perm() == mode
+}
 
 // setHome makes dir the home folder, on Windows too.
 func setHome(t *testing.T, dir string) {
@@ -649,7 +656,7 @@ func TestEditConfig(t *testing.T) {
 			t.Errorf("%s status = %d", file, got)
 		}
 		info, err := os.Stat(filepath.Join(dir, file))
-		if err != nil || info.Mode().Perm() != 0o600 {
+		if err != nil || !private(info, 0o600) {
 			t.Errorf("%s: %v, %v", file, info, err)
 		}
 	}
@@ -666,12 +673,14 @@ func TestEditConfig(t *testing.T) {
 
 func TestPsql(t *testing.T) {
 	setHome(t, t.TempDir())
-	// sh stands in for docker: it reads a line, then says what it got and its size.
+	// The test binary stands in for docker: it reads a line, then says what it
+	// got and its size.
 	var started []string
 	real := startPsql
 	startPsql = func(ctx context.Context, settings conn.Settings, readOnly bool, image, dir string) (term.Term, string, error) {
 		started = append(started, fmt.Sprint(readOnly, " ", image, " ", dir))
-		cmd := exec.CommandContext(ctx, "sh", "-c", "read line; echo \"got:$line size:$(stty size)\"; [ \"$line\" = wait ] && sleep 30")
+		cmd := exec.CommandContext(ctx, os.Args[0])
+		cmd.Env = append(os.Environ(), "WEB_HELPER=psql")
 		t, err := term.Start(ctx, cmd)
 		return t, "your psql is old", err
 	}
@@ -687,7 +696,7 @@ func TestPsql(t *testing.T) {
 			t.Fatalf("status = %d", got)
 		}
 	}
-	if len(started) != 1 || !strings.HasPrefix(started[0], "true ") || !strings.HasSuffix(started[0], "/pg-queries") {
+	if len(started) != 1 || !strings.HasPrefix(started[0], "true ") || !strings.HasSuffix(started[0], string(filepath.Separator)+"pg-queries") {
 		t.Fatalf("started = %v", started)
 	}
 	if got := get(t, s, http.MethodPost, "/psql/size?cols=x&rows=40").Code; got != http.StatusBadRequest {
@@ -695,9 +704,10 @@ func TestPsql(t *testing.T) {
 	}
 	get(t, s, http.MethodPost, "/psql/size?cols=100&rows=40")
 	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("hello\n")))
+	// Enter is \r, as xterm.js sends it.
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("hello\r")))
 	// Each read returns what's ready, the notice first, until no content once
-	// sh has exited.
+	// it has exited.
 	var all strings.Builder
 	for {
 		got, code := readPsql(t, s)
@@ -720,7 +730,7 @@ func TestPsql(t *testing.T) {
 		t.Fatalf("not restarted: %v", started)
 	}
 	w = httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("wait\n")))
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/psql/in", strings.NewReader("wait\r")))
 	// What it wrote comes back while it's still running, not once it exits:
 	// WebKit held back the end of a response that hadn't finished.
 	for all.Reset(); !strings.Contains(all.String(), "got:wait"); {
@@ -785,6 +795,7 @@ func TestServicesListsTheFileAgain(t *testing.T) {
 }
 
 func TestPasswordHint(t *testing.T) {
+	t.Setenv("PGPASSFILE", filepath.Join(t.TempDir(), "pgpass"))
 	for err, want := range map[error]bool{
 		&pgconn.PgError{Code: "28P01"}: true,
 		&pgconn.PgError{Code: "3D000"}: false,
@@ -793,7 +804,7 @@ func TestPasswordHint(t *testing.T) {
 		if rerr := ConnectStatus("", false, err).Render(context.Background(), &b); rerr != nil {
 			t.Fatal(rerr)
 		}
-		if got := strings.Contains(b.String(), ".pgpass"); got != want {
+		if got := strings.Contains(b.String(), "Passwords go in "+passFile()); got != want {
 			t.Errorf("%v: hint shown = %v", err, got)
 		}
 	}
@@ -813,6 +824,8 @@ func TestExposedPasswordFileWarning(t *testing.T) {
 		if err := ConnectStatus("local", false, nil).Render(context.Background(), &b); err != nil {
 			t.Fatal(err)
 		}
+		// Windows has no mode bits for Postgres to check, so it never warns.
+		want := want && runtime.GOOS != "windows"
 		if got := strings.Contains(b.String(), "chmod 600 "+path); got != want {
 			t.Errorf("%o: warning shown = %v", mode, got)
 		}
@@ -940,7 +953,7 @@ func TestOpenBackupsFolder(t *testing.T) {
 		t.Errorf("opened %q, want %q", opened, want)
 	}
 	// It's made if need be, as there'd be nothing to open otherwise.
-	if info, err := os.Stat(want); err != nil || info.Mode().Perm() != 0o700 {
+	if info, err := os.Stat(want); err != nil || !private(info, 0o700) {
 		t.Errorf("folder: %v, %v", info, err)
 	}
 
