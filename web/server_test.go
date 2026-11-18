@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"pg/internal/catalog"
@@ -27,6 +26,7 @@ import (
 	"pg/internal/dockerpg"
 	"pg/internal/history"
 	"pg/internal/session"
+	"pg/internal/term"
 )
 
 func get(t *testing.T, s *Server, method, url string) *httptest.ResponseRecorder {
@@ -655,11 +655,11 @@ func TestPsql(t *testing.T) {
 	// sh stands in for docker: it reads a line, then says what it got and its size.
 	var started []string
 	real := startPsql
-	startPsql = func(ctx context.Context, settings conn.Settings, readOnly bool, image, dir string) (*os.File, *exec.Cmd, string, error) {
+	startPsql = func(ctx context.Context, settings conn.Settings, readOnly bool, image, dir string) (term.Term, string, error) {
 		started = append(started, fmt.Sprint(readOnly, " ", image, " ", dir))
 		cmd := exec.CommandContext(ctx, "sh", "-c", "read line; echo \"got:$line size:$(stty size)\"; [ \"$line\" = wait ] && sleep 30")
-		f, err := pty.Start(cmd)
-		return f, cmd, "your psql is old", err
+		t, err := term.Start(ctx, cmd)
+		return t, "your psql is old", err
 	}
 	t.Cleanup(func() { startPsql = real })
 
