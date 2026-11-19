@@ -2,9 +2,10 @@
 // by `npm run build`.
 import { basicSetup, EditorView } from "codemirror";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
-import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { HighlightStyle, LanguageSupport, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { Compartment, Prec } from "@codemirror/state";
 import { keymap, placeholder } from "@codemirror/view";
+import { parseMixed } from "@lezer/common";
 import { tags } from "@lezer/highlight";
 import { formatDialect, postgresql } from "sql-formatter";
 import { FitAddon } from "@xterm/addon-fit";
@@ -38,7 +39,22 @@ const icons = {
 const drawIcons = (root) =>
 	createIcons({ icons, root: root.matches?.("[data-lucide]") ? root.parentElement : root, attrs: { "aria-hidden": "true" } });
 
-const sqlLanguage = () => sql({ dialect: PostgreSQL, schema: completions.schemas ?? {}, defaultSchema: completions.defaultSchema || undefined });
+// Parses a dollar-quoted string's body as SQL too, so function bodies and do
+// blocks are highlighted rather than shown as one string.
+const postgres = PostgreSQL.language.configure({
+	wrap: parseMixed((node, input) => {
+		if (node.name !== "String" || input.read(node.from, node.from + 1) !== "$") return null;
+		const text = input.read(node.from, node.to);
+		const tag = text.slice(0, text.indexOf("$", 1) + 1);
+		const closed = text.length >= 2 * tag.length && text.endsWith(tag);
+		return { parser: postgres.parser, overlay: [{ from: node.from + tag.length, to: closed ? node.to - tag.length : node.to }] };
+	}),
+});
+
+const sqlLanguage = () => {
+	const support = sql({ dialect: PostgreSQL, schema: completions.schemas ?? {}, defaultSchema: completions.defaultSchema || undefined });
+	return new LanguageSupport(postgres, support.support);
+};
 
 // Which names need quotes is the server's call, as reserved words do too.
 const quoteIfNeeded = (name) => (completions.quote?.has(name) ? `"${name.replaceAll('"', '""')}"` : name);
